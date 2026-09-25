@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+import app_config
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -289,6 +291,59 @@ def proxy_pool_status():
     from proxy_pool import manager_snapshot
     cfg = _load_config_if_idle()
     return {"ok": True, **manager_snapshot(config=cfg)}
+
+
+@app.get("/api/traffic")
+def traffic_status():
+    """本批代理流量计量。
+
+    住宅代理按流量计费，这个接口让面板直接显示用量，避免超支。
+    计量在本地代理桥的中继路径上累加，不额外起代理、不记录目标地址。
+    """
+    try:
+        import traffic_meter
+    except Exception as exc:
+        return {"ok": False, "error": "traffic_meter 不可用: %s" % exc}
+
+    # 计量路径来自配置，而 traffic_meter 通过环境变量取路径。
+    # WebUI 进程启动时不一定跑过配置校验，所以这里补一次注入，
+    # 否则面板会读不到已落盘的计量文件。
+    try:
+        cfg = _load_config_if_idle()
+        app_config._apply_traffic_env(cfg)
+    except Exception:
+        pass
+
+    current = traffic_meter.read_metrics()
+    history = traffic_meter.read_history()
+
+    # 历史批次的均值，用于预估下一批消耗。
+    totals = [int(item.get("bytes_total") or 0) for item in history if item.get("bytes_total")]
+    accounts = [int(item.get("accounts") or 0) for item in history if item.get("accounts")]
+    average_batch = int(sum(totals) / len(totals)) if totals else 0
+    total_accounts = sum(accounts)
+    average_account = int(sum(totals) / total_accounts) if total_accounts else 0
+
+    return {
+        "ok": True,
+        "current": {
+            **current,
+            "bytes_up_text": traffic_meter.format_bytes(current.get("bytes_up")),
+            "bytes_down_text": traffic_meter.format_bytes(current.get("bytes_down")),
+            "bytes_total_text": traffic_meter.format_bytes(current.get("bytes_total")),
+        },
+        "average_batch": average_batch,
+        "average_batch_text": traffic_meter.format_bytes(average_batch),
+        "average_account": average_account,
+        "average_account_text": traffic_meter.format_bytes(average_account),
+        "history": [
+            {
+                **item,
+                "bytes_total_text": traffic_meter.format_bytes(item.get("bytes_total")),
+            }
+            for item in history[:20]
+        ],
+    }
 
 
 @app.get("/api/cpa/status")

@@ -34,3 +34,7 @@ screenshots/
 mooproxy_nodes.txt
 .env
 *.lock
+
+# 批次流量计量落盘（含运行时用量数据）
+logs/traffic.json
+logs/traffic_history.json

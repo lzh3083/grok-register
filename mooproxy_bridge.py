@@ -320,6 +320,8 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
     upstream_host = DEFAULT_HOST
     upstream_port = DEFAULT_PORT
     timeout = 60
+    # 流量计量回调；为 None 时不统计。由 serve() 注入 traffic_meter.record。
+    meter = None
 
     def _read_headers(self):
         data = b""
@@ -380,6 +382,12 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                         connect += "Proxy-Authorization: Basic %s\r\n" % token
                     connect += "\r\n"
                     upstream.sendall(connect.encode())
+                    meter_fn = self._meter_fn()
+                    if meter_fn is not None:
+                        try:
+                            meter_fn("up", len(connect))
+                        except Exception:
+                            pass
                     reply = b""
                     while b"\r\n\r\n" not in reply:
                         chunk = upstream.recv(4096)
@@ -390,7 +398,8 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                         self.request.sendall(reply or b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
                         return
                     self.request.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                    self._relay(self.request, upstream)
+                    self._count_connection()
+                    self._relay(self.request, upstream, meter=self._meter_fn())
                 else:
                     # 普通 HTTP：改写请求行并补上上游认证头
                     lines = [l for l in text.split("\r\n") if not l.lower().startswith("proxy-authorization:")]
@@ -398,10 +407,23 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                     if user:
                         token = base64.b64encode(("%s:%s" % (user, password)).encode()).decode()
                         lines.append("Proxy-Authorization: Basic %s" % token)
-                    upstream.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1"))
+                    rewritten = ("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1")
+                    upstream.sendall(rewritten)
+                    meter_fn = self._meter_fn()
+                    if meter_fn is not None:
+                        try:
+                            meter_fn("up", len(rewritten))
+                        except Exception:
+                            pass
                     if rest:
                         upstream.sendall(rest)
-                    self._relay(self.request, upstream)
+                        if meter_fn is not None:
+                            try:
+                                meter_fn("up", len(rest))
+                            except Exception:
+                                pass
+                    self._count_connection()
+                    self._relay(self.request, upstream, meter=self._meter_fn())
             finally:
                 try:
                     upstream.close()
@@ -417,8 +439,32 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
             except Exception:
                 pass
 
+    def _meter_fn(self):
+        """取类属性上的原始计量函数。
+
+        注意：meter 是挂在类上的普通函数，用 self.meter 取会变成绑定方法
+        （自动多传一个 self），导致 record(direction, nbytes) 参数错位、
+        被 except 静默吞掉，表现为「连接数正常但字节数恒为 0」。
+        """
+        return type(self).meter
+
+    def _count_connection(self):
+        if self.meter is None:
+            return
+        try:
+            import traffic_meter
+            traffic_meter.count_connection()
+        except Exception:
+            pass
+
     @staticmethod
-    def _relay(left, right):
+    def _relay(left, right, meter=None):
+        """双向中继，并可选地统计字节数。
+
+        meter 接收 (direction, nbytes)，direction 为 "up"/"down"：
+        up 是浏览器→上游（上行），down 是上游→浏览器（下行）。
+        计量失败绝不能影响中继本身。
+        """
         sockets = [left, right]
         while True:
             try:
@@ -440,6 +486,11 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                 if not chunk:
                     done = True
                     break
+                if meter is not None:
+                    try:
+                        meter("up" if source is left else "down", len(chunk))
+                    except Exception:
+                        pass
                 try:
                     target.sendall(chunk)
                 except Exception:
@@ -460,14 +511,26 @@ def serve(
     via="",
     upstream_host=DEFAULT_HOST,
     upstream_port=DEFAULT_PORT,
+    meter=None,
 ):
-    """启动本地链式桥。"""
+    """启动本地链式桥。
+
+    meter: 可选回调 (direction, nbytes)，用于统计本批代理流量。
+           默认自动接入 traffic_meter；传 False 可显式关闭。
+    """
     via_host, via_port = _parse_via(via)
+    if meter is None:
+        try:
+            import traffic_meter
+            meter = traffic_meter.record
+        except Exception:
+            meter = None
     handler = type("_Handler", (_BridgeHandler,), {
         "via_host": via_host,
         "via_port": via_port,
         "upstream_host": upstream_host,
         "upstream_port": upstream_port,
+        "meter": meter,
     })
     server = _BridgeServer((host, port), handler)
     route = "经 %s:%s 中转" % (via_host, via_port) if via_host else "直连"

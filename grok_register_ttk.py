@@ -734,7 +734,15 @@ def _save_mail_credential(email, credential, log_callback=None):
 
 def _append_account_line(path, email, password, sso):
     from account_outputs import append_account_line
-    return append_account_line(path, email, password, sso)
+    written = append_account_line(path, email, password, sso)
+    if written:
+        # 用于计算「每账号平均流量」，便于预估下一批的消耗。
+        try:
+            import traffic_meter
+            traffic_meter.count_account()
+        except Exception:
+            pass
+    return written
 
 
 def _queue_unsaved_account(path, payload, error, log_callback=None):
@@ -1689,7 +1697,27 @@ def main_cli():
     if command != "start":
         cli_log("[!] 未输入 start，已退出")
         return
-    run_registration_cli(count)
+    # 本批代理流量计量：住宅代理按流量计费，跑完需要知道用了多少。
+    try:
+        import traffic_meter
+        traffic_meter.begin_batch()
+        cli_log("[*] 已开启本批代理流量计量")
+    except Exception:
+        pass
+    try:
+        run_registration_cli(count)
+    finally:
+        try:
+            import traffic_meter
+            data = traffic_meter.finish_batch()
+            cli_log("[*] 本批代理流量: 上行 %s / 下行 %s / 合计 %s（连接 %s）" % (
+                traffic_meter.format_bytes(data.get("bytes_up")),
+                traffic_meter.format_bytes(data.get("bytes_down")),
+                traffic_meter.format_bytes(data.get("bytes_total")),
+                data.get("connections", 0),
+            ))
+        except Exception:
+            pass
 
 
 def main():

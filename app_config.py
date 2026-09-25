@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import urllib.parse
+from pathlib import Path
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
@@ -76,6 +77,11 @@ DEFAULT_CONFIG = {
     "cpa_sync_target": "",
     "cpa_sync_auth_dir": "",
     "cpa_sync_use_sudo": True,
+    # ---- 批次代理流量计量（本仓库新增）----
+    # 住宅代理按流量计费；计量在本地代理桥的中继路径上累加字节数，
+    # 面板直接展示本批用量与历史均值。留空则仅内存计数、不落盘。
+    "traffic_file": "./logs/traffic.json",
+    "traffic_history_file": "./logs/traffic_history.json",
     "cpa_base_url": "https://cli-chat-proxy.grok.com/v1",
     "cpa_proxy": "",
     "cpa_headless": False,
@@ -197,6 +203,7 @@ def validate_config_structure(raw):
         "grok2api_local_token_file", "api_reverse_tools", "cpa_auth_dir", "cpa_hotload_dir",
         "proxy_pool_file", "proxy_singbox_path", "proxy_pool_state_file",
         "sso_risk_rejected_file", "outlook_accounts_file", "browser_path",
+        "traffic_file", "traffic_history_file",
     }
     for key in string_keys:
         cfg[key] = _require_string(cfg, key, path=key in path_keys)
@@ -296,7 +303,28 @@ def validate_run_requirements(cfg):
             raise ConfigError("远端 token 入池需要旧版 app_key 或新版管理员账号密码")
     if cfg["cpa_export_enabled"] and cfg["cpa_copy_to_hotload"] and not cfg["cpa_hotload_dir"]:
         raise ConfigError("启用 CPA 热加载复制时必须配置 cpa_hotload_dir")
+    _apply_traffic_env(cfg)
     return cfg
+
+
+def _apply_traffic_env(cfg):
+    """把流量计量的落盘路径同步到环境变量。
+
+    traffic_meter 通过环境变量取路径，这样代理桥（可能在另一个进程里
+    以独立命令启动）也能写到同一个文件。路径为相对路径时按项目根解析。
+    """
+    for env_key, cfg_key in (
+        ("GROK_BATCH_TRAFFIC_FILE", "traffic_file"),
+        ("GROK_BATCH_TRAFFIC_HISTORY_FILE", "traffic_history_file"),
+    ):
+        value = str(cfg.get(cfg_key) or "").strip()
+        if not value:
+            os.environ.pop(env_key, None)
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = (Path(__file__).resolve().parent / path).resolve()
+        os.environ[env_key] = str(path)
 
 
 def validate_config(raw):

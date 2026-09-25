@@ -51,6 +51,9 @@
     cpaStatus:'CPA 凭据', cpaRefresh:'刷新', cpaEmail:'邮箱', cpaExpired:'有效期至', cpaFile:'文件',
     cpaNone:'暂无已导出的凭据', cpaSyncOn:'远程同步', cpaSyncOff:'未启用远程同步',
     cpaSyncOk:'目标可达', cpaSyncFail:'目标不可达', cpaFailed:'导出失败', cpaCount:'个凭据',
+    trafficTitle:'本批代理流量', trafficRefresh:'刷新', trafficStarted:'开始时间',
+    trafficUp:'上行', trafficDown:'下行', trafficTotal:'合计', trafficAccounts:'成功账号',
+    trafficNone:'本批暂无流量记录', trafficAvgBatch:'历史批次均值', trafficAvgAccount:'每账号均值',
     proxyEmpty:'暂无代理节点', proxyNode:'节点', proxyRunHealth:'运行健康', proxyProbeStatus:'探测状态',
     proxyLatency:'探测延迟', proxyExitIP:'出口 IP', proxyInflight:'占用', proxyFailures:'失败',
     proxyCooldown:'冷却', proxyType:'类型', proxyProtocol:'协议', proxyBackend:'后端',
@@ -63,6 +66,9 @@
     cpaStatus:'CPA credentials', cpaRefresh:'Refresh', cpaEmail:'Email', cpaExpired:'Expires', cpaFile:'File',
     cpaNone:'No exported credentials yet', cpaSyncOn:'Remote sync', cpaSyncOff:'Remote sync disabled',
     cpaSyncOk:'target reachable', cpaSyncFail:'target unreachable', cpaFailed:'Export failed', cpaCount:'files',
+    trafficTitle:'Batch proxy traffic', trafficRefresh:'Refresh', trafficStarted:'Started',
+    trafficUp:'Up', trafficDown:'Down', trafficTotal:'Total', trafficAccounts:'Accounts',
+    trafficNone:'No traffic recorded for this batch', trafficAvgBatch:'Avg per batch', trafficAvgAccount:'Avg per account',
     proxyEmpty:'No proxy nodes', proxyNode:'Node', proxyRunHealth:'Runtime health', proxyProbeStatus:'Probe status',
     proxyLatency:'Probe latency', proxyExitIP:'Exit IP', proxyInflight:'Inflight', proxyFailures:'Failures',
     proxyCooldown:'Cooldown', proxyType:'Type', proxyProtocol:'Protocol', proxyBackend:'Backend',
@@ -217,6 +223,26 @@
     proxySection.appendChild(cpaShell);
   }
 
+  // 本批代理流量：住宅代理按流量计费，这里直接显示用量与历史均值。
+  if (proxySection) {
+    const trafficShell = document.createElement('div');
+    trafficShell.className = 'proxy-status-shell';
+    trafficShell.innerHTML = `
+      <div class="proxy-status-head">
+        <strong data-i18n="trafficTitle">${t('trafficTitle')}</strong>
+        <div class="proxy-status-actions">
+          <button type="button" id="trafficRefreshBtn" class="mini-btn"><span data-i18n="trafficRefresh">${t('trafficRefresh')}</span></button>
+        </div>
+      </div>
+      <div id="trafficSummary" class="proxy-summary"></div>
+      <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
+        <th data-i18n="trafficStarted">${t('trafficStarted')}</th><th data-i18n="trafficUp">${t('trafficUp')}</th>
+        <th data-i18n="trafficDown">${t('trafficDown')}</th><th data-i18n="trafficTotal">${t('trafficTotal')}</th>
+        <th data-i18n="trafficAccounts">${t('trafficAccounts')}</th>
+      </tr></thead><tbody id="trafficRows"></tbody></table></div>`;
+    proxySection.appendChild(trafficShell);
+  }
+
   function esc(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function renderSourceSummary(data) {
     const target = document.getElementById('proxySourceSummary'); if (!target) return;
@@ -297,6 +323,45 @@
     } catch (_) {}
   }
 
+  function renderTraffic(data) {
+    const rows = document.getElementById('trafficRows');
+    const summary = document.getElementById('trafficSummary');
+    if (!rows || !summary) return;
+    const cur = data.current || {};
+    const parts = [];
+    parts.push(`${t('trafficTotal')}: ${cur.bytes_total_text || '—'}`);
+    if (data.average_batch) parts.push(`${t('trafficAvgBatch')}: ${data.average_batch_text}`);
+    if (data.average_account) parts.push(`${t('trafficAvgAccount')}: ${data.average_account_text}`);
+    summary.textContent = parts.join(' · ');
+    const history = Array.isArray(data.history) ? data.history : [];
+    if (!history.length) {
+      rows.innerHTML = `<tr><td colspan="5" class="proxy-empty">${esc(t('trafficNone'))}</td></tr>`;
+      return;
+    }
+    rows.innerHTML = history.map(item => `<tr>
+      <td>${esc(item.started_at || '—')}</td>
+      <td>${esc(formatBytes(item.bytes_up))}</td>
+      <td>${esc(formatBytes(item.bytes_down))}</td>
+      <td>${esc(item.bytes_total_text || '—')}</td>
+      <td>${esc(item.accounts == null ? '—' : item.accounts)}</td>
+    </tr>`).join('');
+  }
+  function formatBytes(value) {
+    const n = Number(value || 0);
+    if (!isFinite(n) || n <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = n, i = 0;
+    while (size >= 1024 && i < units.length - 1) { size /= 1024; i += 1; }
+    return `${i === 0 ? Math.round(size) : size.toFixed(2)} ${units[i]}`;
+  }
+  async function refreshTraffic() {
+    try {
+      const r = await fetch('./api/traffic');
+      if (!r.ok) return;
+      renderTraffic(await r.json());
+    } catch (_) {}
+  }
+
   async function proxyAction(path) {
     if (dirty.size && !await saveConfig()) return;
     const reload = document.getElementById('proxyReloadBtn'); const test = document.getElementById('proxyTestBtn');
@@ -310,8 +375,11 @@
   if (testBtn) testBtn.onclick = () => proxyAction('./api/proxy-pool/test');
   const cpaRefreshBtn = document.getElementById('cpaRefreshBtn');
   if (cpaRefreshBtn) cpaRefreshBtn.onclick = () => refreshCpaStatus();
-  loadConfig().catch(e => setNotice(e.message,true)); refreshProxyStatus(); refreshCpaStatus();
+  const trafficRefreshBtn = document.getElementById('trafficRefreshBtn');
+  if (trafficRefreshBtn) trafficRefreshBtn.onclick = () => refreshTraffic();
+  loadConfig().catch(e => setNotice(e.message,true)); refreshProxyStatus(); refreshCpaStatus(); refreshTraffic();
   setInterval(() => { if (reloadBtn) reloadBtn.disabled = !!running; if (testBtn) testBtn.disabled = !!running; refreshProxyStatus(); }, 2000);
   // CPA 状态含远程 SSH 探测，开销较大，用较低频率轮询。
   setInterval(refreshCpaStatus, 15000);
+  setInterval(refreshTraffic, 5000);
 })();
