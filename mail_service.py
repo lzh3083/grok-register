@@ -45,7 +45,7 @@ def _detail_retry_attempt(state, message_id, now=None):
     record["next_retry_at"] = current + delay
     return attempt
 
-_OWN_NAMES = {'cloudmail_build_headers', 'cloudmail_preflight', 'cloudmail_wait_for_auth', 'cloudmail_get_email_and_token', 'get_messages', 'cloudflare_get_messages', 'get_yyds_api_key', 'yyds_generate_username', 'yyds_get_domains', 'yyds_get_email_and_token', 'yyds_get_oai_code', 'get_email_provider', 'cloudflare_get_domains', 'extract_verification_code', 'get_cloudflare_api_base', 'cloudflare_apply_auth_params', 'duckmail_get_oai_code', 'create_account', 'get_yyds_jwt', 'get_message_detail', 'yyds_create_account', 'get_duckmail_api_key', 'get_cloudflare_path', 'cloudflare_create_account', 'cloudflare_get_token', 'cloudflare_get_oai_code', 'get_cloudmail_public_token', 'generate_username', 'yyds_get_message_detail', 'cloudflare_next_default_domain', 'yyds_get_messages', 'yyds_get_token', 'get_domains', 'get_token', 'cloudflare_create_temp_address', 'get_cloudflare_api_key', 'get_cloudmail_path', 'get_cloudmail_api_base', 'cloudmail_get_oai_code', 'cloudflare_build_headers', 'cloudflare_is_admin_create_path', 'cloudmail_next_domain', 'cloudflare_get_message_detail', 'cloudmail_get_messages', 'get_user_agent', 'yyds_pick_domain', '_pick_list_payload', 'get_email_and_token', 'get_oai_code', 'get_cloudflare_auth_mode', 'pick_domain', 'cloudflare_user_token'}
+_OWN_NAMES = {'cloudmail_build_headers', 'cloudmail_preflight', 'cloudmail_wait_for_auth', 'cloudmail_get_email_and_token', 'get_messages', 'cloudflare_get_messages', 'get_yyds_api_key', 'yyds_generate_username', 'yyds_get_domains', 'yyds_get_email_and_token', 'yyds_get_oai_code', 'get_email_provider', 'cloudflare_get_domains', 'extract_verification_code', 'get_cloudflare_api_base', 'cloudflare_apply_auth_params', 'duckmail_get_oai_code', 'create_account', 'get_yyds_jwt', 'get_message_detail', 'yyds_create_account', 'get_duckmail_api_key', 'get_cloudflare_path', 'cloudflare_create_account', 'cloudflare_get_token', 'cloudflare_get_oai_code', 'get_cloudmail_public_token', 'generate_username', 'yyds_get_message_detail', 'cloudflare_next_default_domain', 'yyds_get_messages', 'yyds_get_token', 'get_domains', 'get_token', 'cloudflare_create_temp_address', 'get_cloudflare_api_key', 'get_cloudmail_path', 'get_cloudmail_api_base', 'cloudmail_get_oai_code', 'cloudflare_build_headers', 'cloudflare_is_admin_create_path', 'cloudmail_next_domain', 'cloudflare_get_message_detail', 'cloudmail_get_messages', 'get_user_agent', 'yyds_pick_domain', '_pick_list_payload', 'get_email_and_token', 'get_oai_code', 'get_cloudflare_auth_mode', 'pick_domain', 'cloudflare_user_token', 'get_cloudflare_fixed_address', 'get_cloudflare_fixed_jwt', 'mail_subject', 'extract_mail_body', 'extract_mail_subject'}
 
 
 def bind_runtime(namespace):
@@ -57,18 +57,136 @@ def bind_runtime(namespace):
         globals()[name] = value
 
 
+def _split_raw_headers(raw):
+    """把 MIME 原文拆成 (头部, 正文)。
+
+    部分临时邮箱服务（如 cloudflare_temp_email）只返回整封 MIME 原文，
+    邮件头里含有 Received/SPF 等噪声（例如 mail-oo2-x2a.google.com），
+    其形态与 xAI 的 XXX-XXX 验证码格式一致，若混入正文会误提取。
+    """
+    if not isinstance(raw, str):
+        return "", ""
+    normalized = raw.replace("\r\n", "\n")
+    idx = normalized.find("\n\n")
+    if idx < 0:
+        return normalized, ""
+    return normalized[:idx], normalized[idx + 2:]
+
+
+def _decode_transfer_encoding(body, encoding):
+    """按 Content-Transfer-Encoding 解码 MIME 正文段。"""
+    enc = str(encoding or "").strip().lower()
+    if enc == "base64":
+        try:
+            import base64
+            compact = re.sub(r"\s+", "", body)
+            padded = compact + "=" * (-len(compact) % 4)
+            return base64.b64decode(padded).decode("utf-8", "replace")
+        except Exception:
+            return body
+    if enc == "quoted-printable":
+        try:
+            import quopri
+            return quopri.decodestring(body.encode("utf-8", "replace")).decode("utf-8", "replace")
+        except Exception:
+            return body
+    return body
+
+
+def extract_mail_body(raw):
+    """从 MIME 原文中提取可读正文，跳过邮件头。
+
+    支持 multipart/alternative、base64 与 quoted-printable。
+    无法解析时退化为"去掉头部后的原文"，保证仍有内容可用。
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    _headers, body = _split_raw_headers(raw)
+    if not body.strip():
+        return ""
+
+    chunks = []
+    # 按 MIME 分段，逐段读取 Content-Type / Content-Transfer-Encoding。
+    segments = re.split(r"\n--[^\n]*\n", "\n" + body + "\n")
+    for segment in segments:
+        head, _sep, seg_body = segment.partition("\n\n")
+        if not seg_body.strip():
+            continue
+        ctype_match = re.search(r"content-type:\s*([^\n;]+)", head, re.IGNORECASE)
+        ctype = (ctype_match.group(1).strip().lower() if ctype_match else "")
+        if ctype.startswith("multipart/"):
+            continue
+        enc_match = re.search(r"content-transfer-encoding:\s*([^\n;]+)", head, re.IGNORECASE)
+        encoding = enc_match.group(1).strip() if enc_match else ""
+        decoded = _decode_transfer_encoding(seg_body, encoding)
+        if decoded.strip():
+            chunks.append(decoded)
+
+    if not chunks:
+        # 非 multipart：整体按单一正文处理，但仍不含头部。
+        enc_match = re.search(r"content-transfer-encoding:\s*([^\n;]+)", _headers, re.IGNORECASE)
+        encoding = enc_match.group(1).strip() if enc_match else ""
+        decoded = _decode_transfer_encoding(body, encoding)
+        if decoded.strip():
+            chunks.append(decoded)
+
+    text = "\n".join(chunks)
+    if "<" in text and ">" in text:
+        text = re.sub(r"<[^>]+>", " ", text)
+    return text
+
+
+def extract_mail_subject(raw):
+    """从 MIME 原文头部读取 Subject，支持 RFC2047 编码。"""
+    if not isinstance(raw, str):
+        return ""
+    headers, _body = _split_raw_headers(raw)
+    match = re.search(r"^subject:\s*(.+?)\s*$", headers, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if "=?" in value:
+        try:
+            from email.header import decode_header, make_header
+            return str(make_header(decode_header(value)))
+        except Exception:
+            return value
+    return value
+
+
+def mail_subject(message):
+    """读取邮件主题，兼容只返回 MIME 原文（无 subject 字段）的服务。"""
+    if not isinstance(message, dict):
+        return ""
+    subject = str(message.get("subject", "") or "").strip()
+    if subject:
+        return subject
+    return extract_mail_subject(message.get("raw"))
+
+
 def normalize_mail_body(*sources):
-    """Return normalized text from provider payloads with string/list HTML support."""
+    """Return normalized text from provider payloads with string/list HTML support.
+
+    raw 字段按 MIME 解析，只取正文并跳过邮件头，
+    避免 Received/SPF 等头部噪声污染验证码提取。
+    """
     parts = []
     for source in sources:
         if not isinstance(source, dict):
             continue
-        for key in ("text", "raw", "content", "intro", "body", "snippet"):
+        for key in ("text", "content", "intro", "body", "snippet"):
             value = source.get(key)
             values = value if isinstance(value, (list, tuple)) else [value]
             for item in values:
                 if isinstance(item, str) and item.strip():
                     parts.append(item)
+        raw_value = source.get("raw")
+        raw_items = raw_value if isinstance(raw_value, (list, tuple)) else [raw_value]
+        for item in raw_items:
+            if isinstance(item, str) and item.strip():
+                parsed = extract_mail_body(item)
+                if parsed.strip():
+                    parts.append(parsed)
         html_value = source.get("html")
         html_items = html_value if isinstance(html_value, (list, tuple)) else [html_value]
         for item in html_items:
@@ -170,7 +288,30 @@ def cloudflare_user_token():
         json={"email": account, "password": password},
         headers={"Content-Type": "application/json"},
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except Exception as exc:
+        detail = ""
+        try:
+            detail = str(resp.text or "")[:200]
+        except Exception:
+            pass
+        hint = ""
+        low = detail.lower()
+        if "not found" in low:
+            hint = (
+                "：该用户不存在，且实例已关闭用户注册"
+                "（enableUserCreateEmail=false），"
+                "请在邮箱后台手动创建该账号，或改用已存在的账号"
+            )
+        elif "disabled" in low:
+            hint = "：实例已关闭用户注册，请改用已存在的账号"
+        elif "password" in low or "credential" in low:
+            hint = "：账号或密码错误"
+        raise Exception(
+            f"临时邮箱用户登录失败（HTTP {getattr(resp, 'status_code', '?')}）"
+            f"{hint}｜响应: {detail or exc}"
+        ) from exc
     try:
         data = resp.json()
     except Exception:
@@ -362,7 +503,7 @@ def cloudflare_get_oai_code(
 
             # Always inspect the latest list payload. Some providers fill the
             # same message object in-place after the initial notification.
-            subject = str(msg.get("subject", "") or "")
+            subject = mail_subject(msg)
             combined = normalize_mail_body(msg)
 
             detail_attempt = _detail_retry_attempt(detail_retries, msg_id)
@@ -370,7 +511,7 @@ def cloudflare_get_oai_code(
                 try:
                     detail = cloudflare_get_message_detail(api_base, dev_token, msg_id)
                     detail_body = normalize_mail_body(detail)
-                    detail_subject = str(detail.get("subject", "") or "")
+                    detail_subject = mail_subject(detail)
                     if detail_body:
                         combined += "\n" + detail_body
                     if detail_subject:
@@ -882,6 +1023,16 @@ def get_cloudflare_path(key, default_path):
         raw = "/" + raw
     return raw
 
+
+def get_cloudflare_fixed_address():
+    """固定邮箱地址；为空表示每次自动创建新地址。"""
+    return str(config.get("cloudflare_fixed_address", "") or "").strip()
+
+
+def get_cloudflare_fixed_jwt():
+    """固定邮箱的地址级 JWT（用于读取该地址的邮件）。"""
+    return str(config.get("cloudflare_fixed_jwt", "") or "").strip()
+
 def get_cloudmail_api_base():
     return str(config.get("cloudmail_api_base", "") or "").strip().rstrip("/")
 
@@ -925,6 +1076,10 @@ def get_email_and_token(api_key=None):
         api_base = get_cloudflare_api_base()
         if not api_base:
             raise Exception("Cloudflare API Base 未配置")
+        fixed = get_cloudflare_fixed_address()
+        if fixed:
+            # 固定邮箱模式：实例关闭建址时复用既有地址与地址级 JWT。
+            return fixed, get_cloudflare_fixed_jwt()
         create_path = get_cloudflare_path(
             "cloudflare_path_accounts", "/api/new_address"
         )

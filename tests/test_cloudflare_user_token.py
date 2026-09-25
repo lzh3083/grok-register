@@ -162,5 +162,72 @@ class CloudflareUserTokenTests(unittest.TestCase):
         self.assertNotIn("x-user-token", headers)
 
 
+class CloudflareFixedAddressTests(unittest.TestCase):
+    """固定邮箱模式：实例关闭建址时复用既有地址与其地址级 JWT。"""
+
+    def setUp(self):
+        self.original_config = mail_service.config
+        mail_service.config = dict(mail_service.config or {})
+        mail_service.bind_runtime({"http_post": None, "http_get": None})
+
+    def tearDown(self):
+        mail_service.config = self.original_config
+        mail_service.bind_runtime({"http_post": None, "http_get": None})
+
+    def _configure(self, **overrides):
+        config = {
+            "email_provider": "cloudflare",
+            "cloudflare_api_base": "https://mail.example.com",
+            "cloudflare_auth_mode": "none",
+            "cloudflare_api_key": "",
+            "cloudflare_fixed_address": "",
+            "cloudflare_fixed_jwt": "",
+        }
+        config.update(overrides)
+        mail_service.config.update(config)
+
+    def test_fixed_address_skips_creation(self):
+        self._configure(
+            cloudflare_fixed_address="fixed@example.com",
+            cloudflare_fixed_jwt="address-jwt",
+        )
+        called = []
+
+        def fake_post(url, **kwargs):
+            called.append(url)
+            return DummyResponse({"address": "new@example.com", "jwt": "new-jwt"})
+
+        with patch.object(mail_service, "http_post", side_effect=fake_post):
+            address, jwt = mail_service.get_email_and_token()
+
+        self.assertEqual(address, "fixed@example.com")
+        self.assertEqual(jwt, "address-jwt")
+        # 固定模式下不应触达建址接口。
+        self.assertEqual(called, [])
+
+    def test_empty_fixed_address_keeps_auto_create(self):
+        self._configure()
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            return DummyResponse({"address": "auto@example.com", "jwt": "auto-jwt"})
+
+        with patch.object(mail_service, "http_post", side_effect=fake_post):
+            address, jwt = mail_service.get_email_and_token()
+
+        self.assertEqual(address, "auto@example.com")
+        self.assertEqual(jwt, "auto-jwt")
+        self.assertTrue(captured["url"].endswith("/api/new_address"))
+
+    def test_fixed_address_getters_strip_whitespace(self):
+        self._configure(
+            cloudflare_fixed_address="  spaced@example.com  ",
+            cloudflare_fixed_jwt="  spaced-jwt  ",
+        )
+        self.assertEqual(mail_service.get_cloudflare_fixed_address(), "spaced@example.com")
+        self.assertEqual(mail_service.get_cloudflare_fixed_jwt(), "spaced-jwt")
+
+
 if __name__ == "__main__":
     unittest.main()

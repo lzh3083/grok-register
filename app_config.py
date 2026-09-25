@@ -15,6 +15,11 @@ DEFAULT_CONFIG = {
     "cloudflare_path_accounts": "/api/new_address",
     "cloudflare_path_token": "/api/token",
     "cloudflare_path_messages": "/api/mails",
+    # 固定邮箱模式：直接复用已存在的地址与其地址级 JWT，不再调用建址接口。
+    # 适用于实例已关闭建址（或只有单个地址凭证）的场景。
+    # 留空则维持原行为（每次自动创建新地址）。
+    "cloudflare_fixed_address": "",
+    "cloudflare_fixed_jwt": "",
     "cloudmail_api_base": "",
     "cloudmail_public_token": "",
     "cloudmail_domains": "",

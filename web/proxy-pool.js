@@ -36,6 +36,8 @@
     ['lajiao_extract_via','text','full'],
     ['lajiao_require_residential','checkbox'],
     ['lajiao_require_country','text'],
+    ['cloudflare_fixed_address','text','full'],
+    ['cloudflare_fixed_jwt','text','full'],
   ];
 
   const zh = {
@@ -92,6 +94,8 @@
     lajiao_extract_via:['辣椒提取上游代理','调用提取接口时使用的上游代理，用于固定白名单源 IP（本机出口可能漂移）。'],
     lajiao_require_residential:['仅接受住宅 IP','入池前探测 hosting 标记，剔除机房 IP。'],
     lajiao_require_country:['强制出口国家','校验提取到的节点必须属于该国家，例如 US。'],
+    cloudflare_fixed_address:['固定邮箱地址','留空则每个账号自动新建地址。填写后复用该地址，适用于实例已关闭建址的场景。'],
+    cloudflare_fixed_jwt:['固定邮箱 JWT','与固定邮箱地址配套的地址级凭证（网页链接里 ?jwt= 后面那串）。'],
   });
   Object.assign(i18n.en.fields, {
     proxy_mode:['Proxy mode','auto preserves legacy behavior; single/pool enables account-scoped leases.'],
@@ -128,6 +132,8 @@
     lajiao_extract_via:['Lajiao extract upstream','Upstream proxy used when calling the extract API, to pin a whitelisted source IP (this host may egress from multiple IPs).'],
     lajiao_require_residential:['Residential only','Probe the hosting flag and drop datacenter IPs before they enter the pool.'],
     lajiao_require_country:['Enforce exit country','Reject extracted nodes that do not belong to this country, e.g. US.'],
+    cloudflare_fixed_address:['Fixed mail address','Leave empty to create a fresh address per account. Set it to reuse one address, e.g. when address creation is disabled on the instance.'],
+    cloudflare_fixed_jwt:['Fixed mail JWT','Address-level credential paired with the fixed address (the ?jwt= value in the web UI URL).'],
   });
 
   icons.proxy = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 11l8-4M8 13l8 4"/></svg>';
