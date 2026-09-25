@@ -22,6 +22,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import grok_register_ttk  # noqa: E402
+from cpa_xai import browser_confirm  # noqa: E402
 from proxy_pool_v3 import classify_proxy_network_error, is_proxy_transport_exception  # noqa: E402
 
 
@@ -204,6 +205,67 @@ class MaybeExportRetryTests(unittest.TestCase):
         result = grok_register_ttk.maybe_export_cpa_xai_after_success(
             email="a@example.com", password="pw")
         self.assertTrue(result.get("skipped"))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class WaitPageReadyTests(unittest.TestCase):
+    """设备授权前的页面就绪等待。
+
+    实测事故：cookie 注入后只 sleep 1 秒就继续，页面偶尔还没渲染完
+    （DOM 为空），后续关 cookie 横幅、点 Continue/Allow 全部找不到元素，
+    最后表现为 authorization_pending 一直轮询到超时 —— 报错信息完全
+    不指向真正原因。同一账号补跑就成功，说明是时序而非账号问题。
+    """
+
+    def _page(self, states):
+        import json as _json
+
+        class FakePage:
+            def __init__(self):
+                self.states = list(states)
+                self.calls = 0
+
+            def run_js(self, _script):
+                value = self.states[min(self.calls, len(self.states) - 1)]
+                self.calls += 1
+                return _json.dumps(value)
+
+        return FakePage()
+
+    def test_ready_immediately(self):
+        page = self._page([{"ready": "complete", "length": 120}])
+        self.assertTrue(browser_confirm._wait_page_ready(page, lambda _m: None))
+        self.assertEqual(page.calls, 1)
+
+    def test_waits_through_slow_load(self):
+        page = self._page([
+            {"ready": "loading", "length": 0},
+            {"ready": "loading", "length": 0},
+            {"ready": "complete", "length": 80},
+        ])
+        self.assertTrue(browser_confirm._wait_page_ready(page, lambda _m: None))
+        self.assertEqual(page.calls, 3)
+
+    def test_complete_but_empty_body_is_not_ready(self):
+        """readyState=complete 但正文为空，仍不算就绪 —— 这正是踩过的坑。"""
+        page = self._page([{"ready": "complete", "length": 0}])
+        self.assertFalse(browser_confirm._wait_page_ready(page, lambda _m: None, timeout_sec=1.5))
+
+    def test_timeout_logs_and_returns_false(self):
+        logs = []
+        page = self._page([{"ready": "loading", "length": 0}])
+        self.assertFalse(browser_confirm._wait_page_ready(page, logs.append, timeout_sec=1.5))
+        self.assertTrue(any("等待就绪超时" in line for line in logs), logs)
+
+    def test_survives_run_js_exception(self):
+        class Boom:
+            def run_js(self, _script):
+                raise RuntimeError("page gone")
+
+        self.assertFalse(browser_confirm._wait_page_ready(Boom(), lambda _m: None, timeout_sec=1.5))
 
 
 if __name__ == "__main__":

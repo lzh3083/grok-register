@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -249,6 +250,44 @@ def _click_exact(page: Any, labels, log: LogFn, real: bool = False) -> Optional[
         except Exception as exc:
             log("button click failed %s: %s" % (label, exc))
     return None
+
+
+def _wait_page_ready(page: Any, log: LogFn, timeout_sec: float = 15.0) -> bool:
+    """等到页面真正渲染出可见内容。
+
+    设备授权流程里，cookie 注入后要立刻和页面交互（关 cookie 横幅、点
+    Continue/Allow）。如果页面还在加载（DOM 为空、或只有骨架），这些
+    操作会静默找不到元素，最后表现为 authorization_pending 一直轮询到
+    超时 —— 错误信息完全不指向真正原因。
+
+    判定标准：document.readyState 完成 **且** 正文有可见文本。
+    """
+    deadline = time.time() + float(timeout_sec)
+    last_state = ""
+    while time.time() < deadline:
+        try:
+            state = str(page.run_js(
+                """
+                const ready = document.readyState || '';
+                const body = document.body;
+                const text = body ? (body.innerText || '').trim() : '';
+                return JSON.stringify({ ready, length: text.length });
+                """
+            ) or "")
+        except Exception:
+            state = ""
+        try:
+            parsed = json.loads(state) if state else {}
+        except Exception:
+            parsed = {}
+        ready = str(parsed.get("ready") or "")
+        length = int(parsed.get("length") or 0)
+        last_state = "%s/%d" % (ready or "?", length)
+        if ready == "complete" and length > 0:
+            return True
+        _sleep(0.5)
+    log("页面等待就绪超时（最后状态 %s），继续尝试交互" % last_state)
+    return False
 
 
 def _captcha_settings():
@@ -677,7 +716,11 @@ def mint_with_browser(
             logger("cookie inject count=%s" % injected)
             try:
                 work_page.get("https://accounts.x.ai/")
-                _sleep(1.0)
+                # 固定 sleep 不够：页面偶尔渲染很慢，此时 DOM 还是空的，
+                # 后续 cookie 横幅/Continue/Allow 全部找不到元素，最终以
+                # "browser confirm timeout phase=consent" 失败（实测踩过，
+                # 同一账号补跑就成功）。这里等到页面真正出现内容为止。
+                _wait_page_ready(work_page, logger)
                 logger("post-inject session url=%s visible=%s" % (_page_url(work_page)[:120], _norm(_visible_text(work_page))[:120]))
             except Exception as exc:
                 logger("post-inject check: %s" % exc)
