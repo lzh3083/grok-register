@@ -112,11 +112,44 @@ fi
 
 echo
 echo "════════════ 4. 代理 ════════════"
+NODEFILE=$( $PY -c "
+import json
+print(json.load(open('config.json')).get('proxy_pool_file',''))
+" 2>/dev/null)
 SUB=$( $PY -c "
 import json
 print(json.load(open('config.json')).get('proxy_pool_subscription_url',''))
 " 2>/dev/null)
-if [ -n "$SUB" ]; then
+EXPECT=$( $PY -c "
+import json
+print(json.load(open('config.json')).get('mooproxy_country','US'))
+" 2>/dev/null)
+if [ -n "$NODEFILE" ] && [ -f "$NODEFILE" ]; then
+  COUNT=$(grep -c . "$NODEFILE" 2>/dev/null || echo 0)
+  if [ "$COUNT" -gt 0 ]; then
+    ok "节点文件 $NODEFILE（$COUNT 个）"
+    # 逐个校验出口国家：住宅代理可能混入非目标国家节点，必须实测而非相信接口。
+    BAD=0; CHECKED=0
+    while IFS= read -r node; do
+      [ -z "$node" ] && continue
+      CHECKED=$((CHECKED+1))
+      RES=$(timeout 90 $PY mooproxy_bridge.py check --node "$node" --expect "$EXPECT" 2>&1 | tail -1 | sed 's/\[mooproxy\] //')
+      if echo "$RES" | grep -q "✅"; then
+        echo "     $RES"
+      else
+        echo "     ❌ $RES"
+        BAD=$((BAD+1))
+      fi
+    done < "$NODEFILE"
+    if [ "$BAD" -eq 0 ]; then
+      ok "全部 $CHECKED 个节点出口均为 $EXPECT 住宅 IP"
+    else
+      bad "$BAD/$CHECKED 个节点不合格，建议重新生成"
+    fi
+  else
+    bad "节点文件为空: $NODEFILE"
+  fi
+elif [ -n "$SUB" ]; then
   PROX=$(curl -s -m 30 "$SUB" 2>/dev/null)
   if echo "$PROX" | grep -qE '^[0-9a-zA-Z._-]+:[0-9]+'; then
     ok "代理可用: $(echo "$PROX" | head -1)"
@@ -124,7 +157,7 @@ if [ -n "$SUB" ]; then
     bad "代理不可用: $(echo "$PROX" | head -2 | tr '\n' ' ' | cut -c1-160)"
   fi
 else
-  warn "未配置代理订阅（proxy_pool_subscription_url 为空）"
+  warn "未配置代理（proxy_pool_file 与 proxy_pool_subscription_url 均为空）"
 fi
 
 echo

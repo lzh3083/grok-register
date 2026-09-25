@@ -153,8 +153,14 @@ def generate_nodes_with_retry(
                 continue
             info = _probe_node_country(node)
             country = info.get("country", "")
+            if not country:
+                # 探测失败通常意味着该节点已失效（实测会出现
+                # "connect proxy error"）。这种节点若入池，会在注册
+                # 中途断流，比直接丢弃代价大得多。
+                _log("跳过不可用节点 %s（探测失败）" % node.get("ip"))
+                continue
             if expect_country and country != expect_country:
-                _log("跳过非%s节点 %s（实际 %s）" % (expect_country, node.get("ip"), country or "未知"))
+                _log("跳过非%s节点 %s（实际 %s）" % (expect_country, node.get("ip"), country))
                 continue
             node = dict(node)
             node["region"] = info.get("region", "")
