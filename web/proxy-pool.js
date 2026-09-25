@@ -25,6 +25,17 @@
     ['proxy_pool_state_file','text','full'],
     ['proxy_pool_subscription_public_only','checkbox'],
     ['proxy_pool_preflight_enabled','checkbox'],
+    ['us_consistency_enabled','checkbox'],
+    ['us_consistency_timezone','text'],
+    ['us_consistency_locale','text'],
+    ['browser_path','text','full'],
+    ['lajiao_api_base','text','full'],
+    ['lajiao_regions','text'],
+    ['lajiao_num','number',{min:1,max:100}],
+    ['lajiao_sticky_minutes','number',{min:1,max:120}],
+    ['lajiao_extract_via','text','full'],
+    ['lajiao_require_residential','checkbox'],
+    ['lajiao_require_country','text'],
   ];
 
   const zh = {
@@ -70,6 +81,17 @@
     proxy_pool_state_file:['健康状态文件','仅在启用健康持久化时使用。'],
     proxy_pool_subscription_public_only:['订阅仅允许公网','启用后拒绝解析到私网/回环/保留地址的订阅 URL 和重定向。'],
     proxy_pool_preflight_enabled:['注册路径预检','保留非破坏性的 accounts.x.ai / grok.com 可达性预检能力。'],
+    us_consistency_enabled:['美国环境一致性','统一浏览器时区/语言/platform，消除"IP=US 但时区=UTC、platform=Linux"这类自相矛盾特征。关闭即退回原版行为。'],
+    us_consistency_timezone:['浏览器时区','必须与住宅 IP 所在国家一致。美国东部填 America/New_York，西部填 America/Los_Angeles。'],
+    us_consistency_locale:['浏览器语言','需与出口国家匹配，美国用 en-US。'],
+    browser_path:['Chromium 路径','留空自动探测（读 GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH 环境变量及常见安装位置）。容器内浏览器装在非标准目录时必须显式指定。'],
+    lajiao_api_base:['辣椒HTTP 提取接口','动态住宅代理的 IP 提取 API 地址。'],
+    lajiao_regions:['辣椒提取地区','目标地区代码，美国填 US。'],
+    lajiao_num:['辣椒单次提取数','建议与 register_count 匹配：每个账号独占一个 IP。'],
+    lajiao_sticky_minutes:['辣椒粘性时长（分钟）','粘性会话保持时间，必须大于单账号完整流程耗时（注册+CPA），否则 IP 会在中途变化。'],
+    lajiao_extract_via:['辣椒提取上游代理','调用提取接口时使用的上游代理，用于固定白名单源 IP（本机出口可能漂移）。'],
+    lajiao_require_residential:['仅接受住宅 IP','入池前探测 hosting 标记，剔除机房 IP。'],
+    lajiao_require_country:['强制出口国家','校验提取到的节点必须属于该国家，例如 US。'],
   });
   Object.assign(i18n.en.fields, {
     proxy_mode:['Proxy mode','auto preserves legacy behavior; single/pool enables account-scoped leases.'],
@@ -95,6 +117,17 @@
     proxy_pool_state_file:['Health state file','Used only when health persistence is enabled.'],
     proxy_pool_subscription_public_only:['Public-only subscription','Reject subscription URLs/redirects resolving to private, loopback or reserved addresses.'],
     proxy_pool_preflight_enabled:['Registration preflight','Keep non-destructive accounts.x.ai / grok.com path preflight available.'],
+    us_consistency_enabled:['US environment consistency','Normalize browser timezone/locale/platform so that IP=US no longer contradicts timezone=UTC or platform=Linux. Disable to restore upstream behavior.'],
+    us_consistency_timezone:['Browser timezone','Must match the residential IP country. Use America/New_York for US East, America/Los_Angeles for US West.'],
+    us_consistency_locale:['Browser locale','Should match the exit country; en-US for the United States.'],
+    browser_path:['Chromium path','Leave empty to auto-detect (via GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH and common install locations). Required when the browser lives outside standard paths, e.g. inside a container.'],
+    lajiao_api_base:['Lajiao extract API','IP extraction endpoint for the dynamic residential proxy.'],
+    lajiao_regions:['Lajiao region','Target region code, e.g. US.'],
+    lajiao_num:['Lajiao batch size','Keep aligned with register_count: one dedicated IP per account.'],
+    lajiao_sticky_minutes:['Lajiao sticky minutes','Sticky session duration; must exceed a full account flow (registration + CPA) or the IP changes mid-flow.'],
+    lajiao_extract_via:['Lajiao extract upstream','Upstream proxy used when calling the extract API, to pin a whitelisted source IP (this host may egress from multiple IPs).'],
+    lajiao_require_residential:['Residential only','Probe the hosting flag and drop datacenter IPs before they enter the pool.'],
+    lajiao_require_country:['Enforce exit country','Reject extracted nodes that do not belong to this country, e.g. US.'],
   });
 
   icons.proxy = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 11l8-4M8 13l8 4"/></svg>';

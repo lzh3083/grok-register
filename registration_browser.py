@@ -248,6 +248,16 @@ def start_browser(log_callback=None, use_proxy=True):
             browser_started_with_proxy = bool(browser_proxy)
             tabs = browser.get_tabs()
             page = tabs[-1] if tabs else browser.new_tab()
+            # 美国环境一致性：注入 navigator 覆盖脚本与 Client Hints，
+            # 使 JS 可见指纹与 UA 声称的 Windows 桌面环境保持一致。
+            try:
+                import us_consistency
+                if us_consistency.enabled():
+                    us_consistency.apply_page_overrides(page)
+                    if log_callback:
+                        log_callback("[*] %s" % us_consistency.describe())
+            except Exception:
+                pass
             if log_callback and getattr(browser, "user_data_path", None):
                 log_callback(f"[Debug] 当前浏览器资料目录: {browser.user_data_path}")
             if log_callback and get_configured_proxy():

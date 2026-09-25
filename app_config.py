@@ -76,6 +76,24 @@ DEFAULT_CONFIG = {
     "yyds_api_key": "",
     "yyds_jwt": "",
     "defaultDomains": "",
+    # ---- 美国住宅 IP 环境一致性（本仓库新增）----
+    # 把浏览器时区/语言/platform 归一化到"美国 Windows 桌面用户"，
+    # 避免 IP=US 而时区=UTC、platform=Linux 这类自相矛盾特征。
+    "us_consistency_enabled": True,
+    "us_consistency_timezone": "America/New_York",
+    "us_consistency_locale": "en-US",
+    # Chromium 可执行文件路径。留空则按环境变量与常见安装位置自动探测；
+    # 容器/服务器上浏览器常装在非标准目录，此时需显式指定。
+    "browser_path": "",
+    # ---- 辣椒HTTP 美国动态住宅代理（本仓库新增）----
+    # 由 lajiao_proxy.py 提供；配置后可用其 serve 子命令做本地订阅源。
+    "lajiao_api_base": "http://api.lajiaohttp.com/api/extract_ip",
+    "lajiao_regions": "US",
+    "lajiao_num": 8,
+    "lajiao_sticky_minutes": 60,
+    "lajiao_extract_via": "",
+    "lajiao_require_residential": True,
+    "lajiao_require_country": "US",
 }
 
 
@@ -128,6 +146,7 @@ def validate_config_structure(raw):
         "cpa_mint_cookie_inject", "multi_thread_enabled",
         "proxy_pool_probe_dual_stack", "proxy_pool_persist_health",
         "proxy_pool_subscription_public_only", "proxy_pool_preflight_enabled",
+        "us_consistency_enabled", "lajiao_require_residential",
     )
     for key in bool_keys:
         cfg[key] = _require_bool(cfg, key)
@@ -144,11 +163,13 @@ def validate_config_structure(raw):
     cfg["cpa_mint_timeout_sec"] = _require_int(cfg, "cpa_mint_timeout_sec", 30, 1800)
     cfg["cpa_oidc_request_timeout_sec"] = _require_int(cfg, "cpa_oidc_request_timeout_sec", 3, 120)
     cfg["cpa_oidc_poll_timeout_sec"] = _require_int(cfg, "cpa_oidc_poll_timeout_sec", 3, 120)
+    cfg["lajiao_num"] = _require_int(cfg, "lajiao_num", 1, 100)
+    cfg["lajiao_sticky_minutes"] = _require_int(cfg, "lajiao_sticky_minutes", 1, 120)
     string_keys = tuple(key for key, value in DEFAULT_CONFIG.items() if isinstance(value, str))
     path_keys = {
         "grok2api_local_token_file", "api_reverse_tools", "cpa_auth_dir", "cpa_hotload_dir",
         "proxy_pool_file", "proxy_singbox_path", "proxy_pool_state_file",
-        "sso_risk_rejected_file", "outlook_accounts_file",
+        "sso_risk_rejected_file", "outlook_accounts_file", "browser_path",
     }
     for key in string_keys:
         cfg[key] = _require_string(cfg, key, path=key in path_keys)

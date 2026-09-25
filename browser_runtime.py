@@ -182,6 +182,15 @@ def create_browser_options(browser_proxy="", extension_path=None):
     effective_extension = _resolve_extension_path(extension_path)
     if effective_extension:
         options.add_extension(effective_extension)
+    # 美国住宅 IP 环境一致性：统一时区/语言/platform，消除 IP=US 但
+    # 时区=UTC、platform=Linux 这类自相矛盾特征。失败不影响主流程。
+    try:
+        import us_consistency
+        us_consistency.configure(_config)
+        us_consistency.apply_process_timezone()
+        us_consistency.apply_browser_options(options)
+    except Exception:
+        pass
     return options
 
 

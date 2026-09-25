@@ -15,6 +15,7 @@ output/mailboxes/
 
 config.json
 config.local.json
+config_pooltest.json
 proxy_pool_state.json
 
 *.log
