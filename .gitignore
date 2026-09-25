@@ -31,3 +31,5 @@ screenshots/
 
 *.pending.jsonl
 *.pending.jsonl.lock
+mooproxy_nodes.txt
+.env

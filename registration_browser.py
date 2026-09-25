@@ -243,6 +243,25 @@ def start_browser(log_callback=None, use_proxy=True):
         bridge = None
         try:
             browser_proxy, bridge = prepare_browser_proxy(use_proxy=use_proxy, log_callback=log_callback)
+            # 时区必须与代理真实出口地区一致，且必须在 Chromium 启动前确定：
+            # Chromium 在启动时读取 TZ 环境变量，启动后再改不会生效。
+            # 住宅代理的实际落地州无法预先指定（实测下单参数不生效），
+            # 所以这里以探测到的真实出口地区回写时区，避免出现
+            # 「IP 在加州、时区却是纽约」这类矛盾特征。
+            if browser_proxy:
+                try:
+                    import us_consistency
+                    if us_consistency.enabled():
+                        expect = "US"
+                        try:
+                            expect = str(config.get("us_consistency_expect_country") or "US")
+                        except Exception:
+                            pass
+                        zone = us_consistency.align_timezone_with_proxy(browser_proxy, expect_country=expect)
+                        if zone and log_callback:
+                            log_callback("[*] 已按代理实际出口对齐时区: %s" % zone)
+                except Exception:
+                    pass
             browser = Chromium(create_browser_options(browser_proxy=browser_proxy))
             browser_proxy_bridge = bridge
             browser_started_with_proxy = bool(browser_proxy)

@@ -87,6 +87,18 @@ DEFAULT_CONFIG = {
     "us_consistency_enabled": True,
     "us_consistency_timezone": "America/New_York",
     "us_consistency_locale": "en-US",
+    # 代理出口的期望国家。启动浏览器前会探测真实出口，只有国家匹配时
+    # 才按落地州对齐时区；不匹配则保持原时区不动，避免"将错就错"。
+    "us_consistency_expect_country": "US",
+    # ---- MooProxy 美国住宅代理（本仓库新增）----
+    # 由 mooproxy_bridge.py 使用：先调生成接口拿节点，再经干净出口中转。
+    # 入口从本机直连时握手无响应，必须经 --via 指定的 SOCKS5 中转。
+    "mooproxy_api": "https://api.mooproxy.xyz/v1/api/generate_proxies",
+    "mooproxy_country": "US",
+    # state 仅用于构造请求；实测服务端不按此分配，实际落地州随机。
+    "mooproxy_state": "New York",
+    "mooproxy_via": "socks5h://127.0.0.1:1080",
+    "mooproxy_bridge_port": 8890,
     # Chromium 可执行文件路径。留空则按环境变量与常见安装位置自动探测；
     # 容器/服务器上浏览器常装在非标准目录，此时需显式指定。
     "browser_path": "",
@@ -170,6 +182,7 @@ def validate_config_structure(raw):
     cfg["cpa_oidc_poll_timeout_sec"] = _require_int(cfg, "cpa_oidc_poll_timeout_sec", 3, 120)
     cfg["lajiao_num"] = _require_int(cfg, "lajiao_num", 1, 100)
     cfg["lajiao_sticky_minutes"] = _require_int(cfg, "lajiao_sticky_minutes", 1, 120)
+    cfg["mooproxy_bridge_port"] = _require_int(cfg, "mooproxy_bridge_port", 1, 65535)
     string_keys = tuple(key for key, value in DEFAULT_CONFIG.items() if isinstance(value, str))
     path_keys = {
         "grok2api_local_token_file", "api_reverse_tools", "cpa_auth_dir", "cpa_hotload_dir",

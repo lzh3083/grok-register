@@ -20,8 +20,10 @@ grok-register 原版不做任何浏览器指纹归一化，实测在容器/服�
 
 from __future__ import annotations
 
+import json
 import os
 import time
+import urllib.request
 
 # 美国东部时区：人口最密集，是"美国用户"最自然的默认值。
 DEFAULT_TIMEZONE = "America/New_York"
@@ -105,6 +107,126 @@ def configure(config_ref) -> None:
     """由 app_config 注入配置。"""
     global _config
     _config = config_ref if isinstance(config_ref, dict) else {}
+
+
+# 美国各州 → 时区。用于按代理真实出口自动对齐时区。
+# 注意：MooProxy 等住宅代理的 state 参数实际不生效（实测请求 New York
+# 会分到 Nevada/Texas），所以不能依赖下单参数，必须以探测到的真实
+# 出口地区为准，否则会出现「IP 在加州、时区却是纽约」这类矛盾特征。
+_US_STATE_TIMEZONE = {
+    "AL": "America/Chicago", "AK": "America/Anchorage", "AZ": "America/Phoenix",
+    "AR": "America/Chicago", "CA": "America/Los_Angeles", "CO": "America/Denver",
+    "CT": "America/New_York", "DE": "America/New_York", "DC": "America/New_York",
+    "FL": "America/New_York", "GA": "America/New_York", "HI": "Pacific/Honolulu",
+    "ID": "America/Boise", "IL": "America/Chicago", "IN": "America/Indiana/Indianapolis",
+    "IA": "America/Chicago", "KS": "America/Chicago", "KY": "America/New_York",
+    "LA": "America/Chicago", "ME": "America/New_York", "MD": "America/New_York",
+    "MA": "America/New_York", "MI": "America/Detroit", "MN": "America/Chicago",
+    "MS": "America/Chicago", "MO": "America/Chicago", "MT": "America/Denver",
+    "NE": "America/Chicago", "NV": "America/Los_Angeles", "NH": "America/New_York",
+    "NJ": "America/New_York", "NM": "America/Denver", "NY": "America/New_York",
+    "NC": "America/New_York", "ND": "America/Chicago", "OH": "America/New_York",
+    "OK": "America/Chicago", "OR": "America/Los_Angeles", "PA": "America/New_York",
+    "RI": "America/New_York", "SC": "America/New_York", "SD": "America/Chicago",
+    "TN": "America/Chicago", "TX": "America/Chicago", "UT": "America/Denver",
+    "VT": "America/New_York", "VA": "America/New_York", "WA": "America/Los_Angeles",
+    "WV": "America/New_York", "WI": "America/Chicago", "WY": "America/Denver",
+}
+
+# 州全名 → 缩写，便于直接匹配 ip-api 的 regionName。
+_US_STATE_NAME_ABBR = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "district of columbia": "DC", "florida": "FL", "georgia": "GA", "hawaii": "HI",
+    "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI",
+    "south carolina": "SC", "south dakota": "SD", "tennessee": "TN", "texas": "TX",
+    "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+}
+
+
+def timezone_for_region(region) -> str:
+    """按美国州名/缩写返回时区；无法识别时返回空串。"""
+    raw = str(region or "").strip()
+    if not raw:
+        return ""
+    upper = raw.upper()
+    if upper in _US_STATE_TIMEZONE:
+        return _US_STATE_TIMEZONE[upper]
+    abbr = _US_STATE_NAME_ABBR.get(raw.lower())
+    if abbr:
+        return _US_STATE_TIMEZONE.get(abbr, "")
+    return ""
+
+
+def apply_region_timezone(region) -> str:
+    """按代理真实出口地区对齐时区。
+
+    这是「IP ↔ 时区」一致性的关键：住宅代理的实际落地州无法预先指定，
+    必须以探测结果为准回写，否则时区会与 IP 地理位置矛盾。
+    """
+    zone = timezone_for_region(region)
+    if not zone:
+        return ""
+    _config["us_consistency_timezone"] = zone
+    apply_process_timezone()
+    return zone
+
+
+def probe_exit_region(proxy_url="", timeout=20):
+    """经代理探测出口的国家与地区，返回 dict（失败返回空 dict）。
+
+    用标准库实现：此时浏览器还没启动，拿到的通常是 proxy_bridge 提供的
+    无认证本地代理，urllib 可直接使用。探测失败不抛异常 —— 一致性对齐
+    属于增强项，不应因探测失败而中断注册主流程。
+    """
+    url = (
+        "http://ip-api.com/json/?fields=status,country,countryCode,"
+        "regionName,city,isp,hosting,proxy,mobile,query"
+    )
+    raw = str(proxy_url or "").strip()
+    try:
+        if raw:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": raw, "https": raw})
+            )
+        else:
+            opener = urllib.request.build_opener()
+        request = urllib.request.Request(url, headers={"User-Agent": "curl/7.88.1"})
+        with opener.open(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict) or data.get("status") != "success":
+        return {}
+    return {
+        "ip": str(data.get("query") or ""),
+        "country": str(data.get("countryCode") or ""),
+        "region": str(data.get("regionName") or ""),
+        "city": str(data.get("city") or ""),
+        "isp": str(data.get("isp") or ""),
+        "hosting": bool(data.get("hosting")),
+        "proxy": bool(data.get("proxy")),
+    }
+
+
+def align_timezone_with_proxy(proxy_url="", expect_country="US") -> str:
+    """探测代理出口地区并把时区对齐到该地区，返回生效的时区名。
+
+    仅当出口国家符合预期时才对齐，避免误连到其他国家时代码「将错就错」。
+    """
+    info = probe_exit_region(proxy_url)
+    if not info:
+        return ""
+    if expect_country and info.get("country") != expect_country:
+        return ""
+    return apply_region_timezone(info.get("region"))
 
 
 def enabled() -> bool:
