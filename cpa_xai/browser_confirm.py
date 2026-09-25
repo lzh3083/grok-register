@@ -251,24 +251,103 @@ def _click_exact(page: Any, labels, log: LogFn, real: bool = False) -> Optional[
     return None
 
 
+def _captcha_settings():
+    """读取打码配置。任何异常都当作「未启用」，不影响主流程。"""
+    try:
+        import app_config
+        cfg = getattr(app_config, "config", None)
+        if not isinstance(cfg, dict):
+            return None
+        if not cfg.get("captcha_solver_enabled"):
+            return None
+        key = str(cfg.get("captcha_solver_api_key") or "").strip()
+        if not key:
+            return None
+        return {
+            "api_key": key,
+            "api_base": str(cfg.get("captcha_solver_api_base") or "").strip(),
+            "timeout_sec": float(cfg.get("captcha_solver_timeout_sec") or 120),
+        }
+    except Exception:
+        return None
+
+
+def _try_solve_turnstile(page: Any, log: LogFn, email: str = "") -> bool:
+    """用打码平台解 Turnstile 并注入。未启用或失败都返回 False。"""
+    settings = _captcha_settings()
+    if not settings:
+        return False
+    try:
+        import captcha_solver
+    except Exception as exc:
+        log("打码模块不可用: %s" % exc)
+        return False
+    log("检测到 Turnstile，交给打码平台处理%s" % (" (%s)" % email if email else ""))
+    try:
+        result = captcha_solver.solve_and_inject(
+            page, settings["api_key"], log=log,
+            api_base=settings["api_base"], timeout_sec=settings["timeout_sec"],
+        )
+    except Exception as exc:
+        log("打码异常: %s" % str(exc)[:160])
+        return False
+    if result.get("ok"):
+        log("Turnstile 已通过打码平台解出并注入（token %d 字符）" % int(result.get("token_len") or 0))
+        if not result.get("ua_matched", True):
+            log("警告: 打码 UA 与浏览器不一致，token 可能不被接受")
+        return True
+    log("打码未成功: %s" % result.get("reason", "未知原因"))
+    return False
+
+
+def _turnstile_satisfied(page: Any) -> bool:
+    """页面是否已不再处于 Turnstile 挑战状态。"""
+    try:
+        if _is_turnstile_challenge(_visible_text(page)):
+            return False
+    except Exception:
+        return False
+    try:
+        token_length = page.run_js(
+            """
+            const input = document.querySelector('input[name="cf-turnstile-response"]');
+            return String((input && input.value) || '').trim().length;
+            """
+        )
+        if int(token_length or 0) >= 80:
+            return True
+    except Exception:
+        pass
+    try:
+        return not _is_turnstile_challenge(_visible_text(page))
+    except Exception:
+        return False
+
+
 def _wait_turnstile(page: Any, log: LogFn, timeout_sec: float, email: str = "", raise_on_timeout: bool = False) -> bool:
+    """等 Turnstile 通过。
+
+    先被动等待浏览器自己过；若始终过不去且配置了打码平台，则交云端解题
+    并注入 token，再给它一点时间生效。这样正常情况不额外花钱，只在真
+    被卡住时才动用打码。
+    """
     deadline = time.time() + float(timeout_sec)
+    solver_used = False
     while time.time() < deadline:
-        text = _visible_text(page)
-        if not _is_turnstile_challenge(text):
-            try:
-                token_length = page.run_js(
-                    """
-                    const input = document.querySelector('input[name="cf-turnstile-response"]');
-                    return String((input && input.value) || '').trim().length;
-                    """
-                )
-                if int(token_length or 0) >= 80:
-                    return True
-            except Exception:
-                pass
-            if not _is_turnstile_challenge(_visible_text(page)):
-                return True
+        if _turnstile_satisfied(page):
+            return True
+        # 被动等待过半仍未通过，且尚未用过打码 → 试一次打码
+        remaining = deadline - time.time()
+        if not solver_used and remaining <= float(timeout_sec) / 2.0:
+            solver_used = True
+            if _try_solve_turnstile(page, log, email=email):
+                # 注入后给页面几秒完成校验
+                grace = min(8.0, max(0.0, deadline - time.time()))
+                grace_deadline = time.time() + grace
+                while time.time() < grace_deadline:
+                    _sleep(1.0)
+                    if _turnstile_satisfied(page):
+                        return True
         _sleep(1.0)
     if raise_on_timeout:
         shot = _save_debug_shot(page, tag="turnstile-timeout", email=email, log=log)

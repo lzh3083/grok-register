@@ -90,6 +90,16 @@ DEFAULT_CONFIG = {
     "cpa_mint_cookie_inject": True,
     "cpa_oidc_request_timeout_sec": 15,
     "cpa_oidc_poll_timeout_sec": 15,
+    # ---- YesCaptcha 打码（本仓库新增）----
+    # 住宅 IP 下登录/注册页可能弹 Cloudflare Turnstile。开启后遇到
+    # Turnstile 会交给 YesCaptcha 云端解题并注入 token。
+    # 注意：只对「页面能加载出来、能看到 sitekey」的情况有效；若整站被
+    # 托管挑战挡住（Just a moment...），页面拿不到 sitekey，打码也无能为力。
+    "captcha_solver_enabled": False,
+    "captcha_solver_provider": "yescaptcha",
+    "captcha_solver_api_key": "",
+    "captcha_solver_api_base": "https://api.yescaptcha.com",
+    "captcha_solver_timeout_sec": 120,
     "grok2api_allow_legacy_full_save": False,
     "email_provider": "duckmail",
     "yyds_api_key": "",
@@ -179,6 +189,7 @@ def validate_config_structure(raw):
         "proxy_pool_probe_dual_stack", "proxy_pool_persist_health",
         "proxy_pool_subscription_public_only", "proxy_pool_preflight_enabled",
         "us_consistency_enabled", "lajiao_require_residential",
+        "captcha_solver_enabled",
     )
     for key in bool_keys:
         cfg[key] = _require_bool(cfg, key)
@@ -195,6 +206,7 @@ def validate_config_structure(raw):
     cfg["cpa_mint_timeout_sec"] = _require_int(cfg, "cpa_mint_timeout_sec", 30, 1800)
     cfg["cpa_oidc_request_timeout_sec"] = _require_int(cfg, "cpa_oidc_request_timeout_sec", 3, 120)
     cfg["cpa_oidc_poll_timeout_sec"] = _require_int(cfg, "cpa_oidc_poll_timeout_sec", 3, 120)
+    cfg["captcha_solver_timeout_sec"] = _require_int(cfg, "captcha_solver_timeout_sec", 10, 600)
     cfg["lajiao_num"] = _require_int(cfg, "lajiao_num", 1, 100)
     cfg["lajiao_sticky_minutes"] = _require_int(cfg, "lajiao_sticky_minutes", 1, 120)
     cfg["mooproxy_bridge_port"] = _require_int(cfg, "mooproxy_bridge_port", 1, 65535)
