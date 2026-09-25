@@ -82,7 +82,37 @@
 
 ## 五、使用步骤
 
-### 前置：配置辣椒白名单（必须）
+### 前置 A：配置临时邮箱（Cloudflare Temp Email）
+
+若你自建了 `cloudflare_temp_email`（本项目支持），需要区分两种认证模式：
+
+| 模式 | 适用场景 | 配置 |
+|---|---|---|
+| `x-admin-auth` | 有管理员密码，走 `/admin/new_address` | `cloudflare_api_key` = admin 密码 |
+| `x-user-token` | **无 admin 密码**，普通账号自助登录 | `cloudflare_api_key` = `邮箱:密码` |
+
+**推荐 `x-user-token`**：实例即使开启了「禁止匿名创建邮箱」
+（`disableAnonymousUserCreateEmail: true`），普通用户仍可自助注册并建址，
+不需要向管理员索要密码。
+
+```jsonc
+{
+  "email_provider": "cloudflare",
+  "cloudflare_api_base": "https://apimail.example.com",  // API 域名，常与网页域名不同
+  "cloudflare_auth_mode": "x-user-token",
+  "cloudflare_api_key": "你的账号@你的域名:你的密码",     // 首次会自动注册
+  "cloudflare_path_accounts": "/api/new_address",
+  "cloudflare_path_messages": "/api/mails",
+  "cloudflare_path_domains": "/api/domains",
+  "defaultDomains": "你的域名"
+}
+```
+
+> ⚠️ **API 域名可能与网页域名不同**。例如网页在 `mail.example.com`，
+> 而 API 在 `apimail.example.com`。`cloudflare_api_base` 必须填 **API 域名**。
+> 判断方法：网页源码里搜 `apiBase`，或直接试 `/open_api/settings` 能否返回 JSON。
+
+### 前置 B：配置辣椒白名单
 
 未加白名单时，API 会直接返回错误文本：
 

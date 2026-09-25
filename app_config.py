@@ -175,7 +175,7 @@ def validate_config_structure(raw):
         cfg[key] = _require_string(cfg, key, path=key in path_keys)
     enums = {
         "email_provider": {"duckmail", "yyds", "cloudflare", "cloudmail", "outlook"},
-        "cloudflare_auth_mode": {"query-key", "bearer", "x-api-key", "x-admin-auth", "none"},
+        "cloudflare_auth_mode": {"query-key", "bearer", "x-api-key", "x-admin-auth", "x-user-token", "none"},
         "grok2api_pool_name": {"ssoBasic", "ssoSuper"},
         "proxy_mode": {"auto", "direct", "single", "pool"},
         "proxy_fallback": {"none", "direct", "single"},

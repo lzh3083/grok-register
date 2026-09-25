@@ -19,6 +19,8 @@ CLOUDMAIL_AUTH_CONVERGENCE_SECONDS = 70.0
 config = {}
 _cf_domain_index = 0
 _cloudmail_domain_index = 0
+_cf_user_token = ""
+_cf_user_token_expiry = 0.0
 
 
 class CloudMailAuthError(RuntimeError):
@@ -43,14 +45,14 @@ def _detail_retry_attempt(state, message_id, now=None):
     record["next_retry_at"] = current + delay
     return attempt
 
-_OWN_NAMES = {'cloudmail_build_headers', 'cloudmail_preflight', 'cloudmail_wait_for_auth', 'cloudmail_get_email_and_token', 'get_messages', 'cloudflare_get_messages', 'get_yyds_api_key', 'yyds_generate_username', 'yyds_get_domains', 'yyds_get_email_and_token', 'yyds_get_oai_code', 'get_email_provider', 'cloudflare_get_domains', 'extract_verification_code', 'get_cloudflare_api_base', 'cloudflare_apply_auth_params', 'duckmail_get_oai_code', 'create_account', 'get_yyds_jwt', 'get_message_detail', 'yyds_create_account', 'get_duckmail_api_key', 'get_cloudflare_path', 'cloudflare_create_account', 'cloudflare_get_token', 'cloudflare_get_oai_code', 'get_cloudmail_public_token', 'generate_username', 'yyds_get_message_detail', 'cloudflare_next_default_domain', 'yyds_get_messages', 'yyds_get_token', 'get_domains', 'get_token', 'cloudflare_create_temp_address', 'get_cloudflare_api_key', 'get_cloudmail_path', 'get_cloudmail_api_base', 'cloudmail_get_oai_code', 'cloudflare_build_headers', 'cloudflare_is_admin_create_path', 'cloudmail_next_domain', 'cloudflare_get_message_detail', 'cloudmail_get_messages', 'get_user_agent', 'yyds_pick_domain', '_pick_list_payload', 'get_email_and_token', 'get_oai_code', 'get_cloudflare_auth_mode', 'pick_domain'}
+_OWN_NAMES = {'cloudmail_build_headers', 'cloudmail_preflight', 'cloudmail_wait_for_auth', 'cloudmail_get_email_and_token', 'get_messages', 'cloudflare_get_messages', 'get_yyds_api_key', 'yyds_generate_username', 'yyds_get_domains', 'yyds_get_email_and_token', 'yyds_get_oai_code', 'get_email_provider', 'cloudflare_get_domains', 'extract_verification_code', 'get_cloudflare_api_base', 'cloudflare_apply_auth_params', 'duckmail_get_oai_code', 'create_account', 'get_yyds_jwt', 'get_message_detail', 'yyds_create_account', 'get_duckmail_api_key', 'get_cloudflare_path', 'cloudflare_create_account', 'cloudflare_get_token', 'cloudflare_get_oai_code', 'get_cloudmail_public_token', 'generate_username', 'yyds_get_message_detail', 'cloudflare_next_default_domain', 'yyds_get_messages', 'yyds_get_token', 'get_domains', 'get_token', 'cloudflare_create_temp_address', 'get_cloudflare_api_key', 'get_cloudmail_path', 'get_cloudmail_api_base', 'cloudmail_get_oai_code', 'cloudflare_build_headers', 'cloudflare_is_admin_create_path', 'cloudmail_next_domain', 'cloudflare_get_message_detail', 'cloudmail_get_messages', 'get_user_agent', 'yyds_pick_domain', '_pick_list_payload', 'get_email_and_token', 'get_oai_code', 'get_cloudflare_auth_mode', 'pick_domain', 'cloudflare_user_token'}
 
 
 def bind_runtime(namespace):
     global config
     config = namespace.get("config", config)
     for name, value in namespace.items():
-        if name.startswith("__") or name in _OWN_NAMES or name in {"config", "_cf_domain_index", "_cloudmail_domain_index"}:
+        if name.startswith("__") or name in _OWN_NAMES or name in {"config", "_cf_domain_index", "_cloudmail_domain_index", "_cf_user_token", "_cf_user_token_expiry"}:
             continue
         globals()[name] = value
 
@@ -105,6 +107,13 @@ def cloudflare_build_headers(content_type=False):
     headers = {"Content-Type": "application/json"} if content_type else {}
     key = get_cloudflare_api_key()
     mode = get_cloudflare_auth_mode()
+    if mode == "x-user-token":
+        # 普通用户模式：cloudflare_temp_email 在禁用匿名建址时，
+        # 仍允许注册用户凭 x-user-token 调用 /api/new_address。
+        token = cloudflare_user_token()
+        if token:
+            headers["x-user-token"] = token
+        return headers
     if key:
         if mode == "x-api-key":
             headers["X-API-Key"] = key
@@ -113,6 +122,70 @@ def cloudflare_build_headers(content_type=False):
         elif mode not in ("none", "query-key"):
             headers["Authorization"] = f"Bearer {key}"
     return headers
+
+
+def cloudflare_user_token():
+    """获取（并缓存）普通用户 JWT，用于 x-user-token 模式。
+
+    账号可自助注册：实例开启 disableAnonymousUserCreateEmail 时，
+    /api/new_address 只认登录用户，因此这里先注册（已存在则忽略），
+    再登录拿 JWT。凭据来自 cloudflare_api_key（格式 邮箱:密码）。
+    """
+    global _cf_user_token, _cf_user_token_expiry
+    cached = str(_cf_user_token or "")
+    if cached and time.time() < _cf_user_token_expiry:
+        return cached
+
+    raw = str(get_cloudflare_api_key() or "").strip()
+    if not raw:
+        raise Exception(
+            "cloudflare_auth_mode=x-user-token 需要 cloudflare_api_key 提供 邮箱:密码"
+        )
+    if ":" not in raw:
+        raise Exception(
+            "cloudflare_api_key 格式应为 邮箱:密码（用于登录临时邮箱服务）"
+        )
+    account, _, password = raw.partition(":")
+    account = account.strip()
+    password = password.strip()
+    if not account or not password:
+        raise Exception("cloudflare_api_key 的邮箱或密码为空")
+
+    api_base = get_cloudflare_api_base()
+    if not api_base:
+        raise Exception("Cloudflare API Base 未配置")
+
+    # 先尝试注册；用户已存在时返回 4xx，忽略即可。
+    try:
+        http_post(
+            f"{api_base}/user_api/register",
+            json={"email": account, "password": password},
+            headers={"Content-Type": "application/json"},
+        )
+    except Exception:
+        pass
+
+    resp = http_post(
+        f"{api_base}/user_api/login",
+        json={"email": account, "password": password},
+        headers={"Content-Type": "application/json"},
+    )
+    resp.raise_for_status()
+    try:
+        data = resp.json()
+    except Exception:
+        raise Exception(f"临时邮箱用户登录返回非JSON: {resp.text[:200]}")
+    token = ""
+    if isinstance(data, dict):
+        token = str(data.get("jwt") or data.get("token") or "")
+        if not token and isinstance(data.get("data"), dict):
+            token = str(data["data"].get("jwt") or data["data"].get("token") or "")
+    if not token:
+        raise Exception(f"临时邮箱用户登录未返回 jwt: {data}")
+    _cf_user_token = token
+    # JWT 默认 30 天，这里保守缓存 12 小时，避免过期后仍复用。
+    _cf_user_token_expiry = time.time() + 12 * 3600
+    return token
 
 def cloudflare_create_account(api_base, address, password, api_key=None, expires_in=0):
     headers = cloudflare_build_headers(content_type=True)
@@ -162,9 +235,41 @@ def cloudflare_get_domains(api_base, api_key=None):
         headers["X-API-Key"] = api_key
     path = get_cloudflare_path("cloudflare_path_domains", "/domains")
     params = cloudflare_apply_auth_params()
-    resp = http_get(f"{api_base}{path}", headers=headers, params=params)
-    resp.raise_for_status()
-    return _pick_list_payload(resp.json())
+    try:
+        resp = http_get(f"{api_base}{path}", headers=headers, params=params)
+        resp.raise_for_status()
+        picked = _pick_list_payload(resp.json())
+        if picked:
+            return picked
+    except Exception:
+        # 用户模式下 /api/domains 需要地址凭证，回退到公开设置接口。
+        pass
+    return cloudflare_get_public_domains(api_base)
+
+
+def cloudflare_get_public_domains(api_base):
+    """从 /open_api/settings 读取可用域名，无需认证。
+
+    返回与 /api/domains 兼容的 [{domain, isVerified}] 结构，
+    以便上层回退逻辑可以复用。
+    """
+    try:
+        resp = http_get(f"{api_base}/open_api/settings")
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    names = []
+    for key in ("defaultDomains", "domains"):
+        value = data.get(key)
+        if isinstance(value, list):
+            for item in value:
+                text = str(item or "").strip()
+                if text and text not in names:
+                    names.append(text)
+    return [{"domain": name, "isVerified": True} for name in names]
 
 def cloudflare_get_message_detail(api_base, token, message_id):
     headers = {"Authorization": f"Bearer {token}"}
