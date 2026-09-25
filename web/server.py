@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import app_config
+import jwt_inspect
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -368,6 +369,10 @@ def cpa_status():
             data = json.loads(path.read_text(encoding="utf-8"))
             entry["email"] = str(data.get("email") or "")
             entry["expired"] = str(data.get("expired") or "")
+            # 本地解码 access_token，检查 xAI 的 bfs 标记（纯本地、无网络）。
+            info = jwt_inspect.inspect_token(data.get("access_token"))
+            entry["bfs"] = bool(info.get("bfs"))
+            entry["bfs_value"] = info.get("bfs_value")
         except Exception as exc:
             entry["error"] = str(exc)
         credentials.append(entry)
@@ -427,6 +432,7 @@ def cpa_status():
         "credentials": credentials,
         "failed": failed,
         "sync": sync,
+        "bfs_flagged": sum(1 for item in credentials if item.get("bfs")),
     }
 
 

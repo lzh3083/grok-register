@@ -49,7 +49,7 @@
   const zh = {
     tabProxy:'代理池', proxyReload:'重新加载', proxyTest:'测试节点', proxyStatus:'代理节点状态',
     cpaStatus:'CPA 凭据', cpaRefresh:'刷新', cpaEmail:'邮箱', cpaExpired:'有效期至', cpaFile:'文件',
-    cpaNone:'暂无已导出的凭据', cpaSyncOn:'远程同步', cpaSyncOff:'未启用远程同步',
+    cpaNone:'暂无已导出的凭据', cpaBfs:'BFS 标记', cpaBfsYes:'已标记', cpaSyncOn:'远程同步', cpaSyncOff:'未启用远程同步',
     cpaSyncOk:'目标可达', cpaSyncFail:'目标不可达', cpaFailed:'导出失败', cpaCount:'个凭据',
     trafficTitle:'本批代理流量', trafficRefresh:'刷新', trafficStarted:'开始时间',
     trafficUp:'上行', trafficDown:'下行', trafficTotal:'合计', trafficAccounts:'成功账号',
@@ -64,7 +64,7 @@
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
     cpaStatus:'CPA credentials', cpaRefresh:'Refresh', cpaEmail:'Email', cpaExpired:'Expires', cpaFile:'File',
-    cpaNone:'No exported credentials yet', cpaSyncOn:'Remote sync', cpaSyncOff:'Remote sync disabled',
+    cpaNone:'No exported credentials yet', cpaBfs:'BFS flag', cpaBfsYes:'flagged', cpaSyncOn:'Remote sync', cpaSyncOff:'Remote sync disabled',
     cpaSyncOk:'target reachable', cpaSyncFail:'target unreachable', cpaFailed:'Export failed', cpaCount:'files',
     trafficTitle:'Batch proxy traffic', trafficRefresh:'Refresh', trafficStarted:'Started',
     trafficUp:'Up', trafficDown:'Down', trafficTotal:'Total', trafficAccounts:'Accounts',
@@ -218,6 +218,7 @@
       <div id="cpaSummary" class="proxy-summary"></div>
       <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
         <th data-i18n="cpaEmail">${t('cpaEmail')}</th><th data-i18n="cpaExpired">${t('cpaExpired')}</th>
+        <th data-i18n="cpaBfs">${t('cpaBfs')}</th>
         <th data-i18n="cpaFile">${t('cpaFile')}</th>
       </tr></thead><tbody id="cpaRows"></tbody></table></div>`;
     proxySection.appendChild(cpaShell);
@@ -304,6 +305,7 @@
       parts.push(t('cpaSyncOff'));
     }
     if (failed.length) parts.push(`${t('cpaFailed')}: ${failed.length}`);
+    if (data.bfs_flagged) parts.push(`${t('cpaBfs')}: ${data.bfs_flagged}`);
     summary.textContent = parts.join(' · ');
     if (!items.length) {
       rows.innerHTML = `<tr><td colspan="3" class="proxy-empty">${esc(t('cpaNone'))}</td></tr>`;
@@ -312,6 +314,7 @@
     rows.innerHTML = items.map(item => `<tr>
       <td>${esc(item.email || '—')}</td>
       <td>${esc(item.expired || '—')}</td>
+      <td>${item.bfs ? '<span class="proxy-dot bad"></span>' + esc(t('cpaBfsYes')) + (item.bfs_value != null ? ' (' + esc(item.bfs_value) + ')' : '') : '—'}</td>
       <td title="${esc(item.file)}">${esc(item.file)}</td>
     </tr>`).join('');
   }
