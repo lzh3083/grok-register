@@ -47,6 +47,8 @@ DEFAULT_API = "http://api.lajiaohttp.com/api/extract_ip"
 # 辣椒 txt 返回形如 1.2.3.4:8080，也可能给网关域名。
 _PROXY_LINE_RE = re.compile(r"^(?P<host>[A-Za-z0-9._-]+):(?P<port>\d{1,5})$")
 _WHITELIST_HINT_RE = re.compile(r"not\s+added\s+to\s+whitelist", re.I)
+# 套餐/流量状态类错误：与代码和白名单无关，需要用户在服务商后台处理。
+_TRAFFIC_EXPIRED_RE = re.compile(r"流量已过期|已过期|expired|insufficient|余额不足", re.I)
 
 
 class LajiaoError(RuntimeError):
@@ -104,6 +106,12 @@ def parse_proxy_lines(text: str) -> list:
             raise LajiaoError(
                 "源 IP 未加入白名单: %s —— 请把该 IP 加入辣椒后台的 API 白名单，"
                 "或用 --via 指定一个已加白名单的固定出口" % line
+            )
+        if _TRAFFIC_EXPIRED_RE.search(line):
+            raise LajiaoError(
+                "账户流量已过期（服务端返回: %s）—— 这是套餐/余额状态，"
+                "不是代码或白名单问题。请到辣椒后台续费或购买流量包后重试；"
+                "也可先用其他可用代理验证注册流程。" % line[:120]
             )
         # 其它非空文本视为服务端错误提示
         if len(line) > 2 and ":" not in line:
