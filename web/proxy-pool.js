@@ -48,6 +48,9 @@
 
   const zh = {
     tabProxy:'代理池', proxyReload:'重新加载', proxyTest:'测试节点', proxyStatus:'代理节点状态',
+    cpaStatus:'CPA 凭据', cpaRefresh:'刷新', cpaEmail:'邮箱', cpaExpired:'有效期至', cpaFile:'文件',
+    cpaNone:'暂无已导出的凭据', cpaSyncOn:'远程同步', cpaSyncOff:'未启用远程同步',
+    cpaSyncOk:'目标可达', cpaSyncFail:'目标不可达', cpaFailed:'导出失败', cpaCount:'个凭据',
     proxyEmpty:'暂无代理节点', proxyNode:'节点', proxyRunHealth:'运行健康', proxyProbeStatus:'探测状态',
     proxyLatency:'探测延迟', proxyExitIP:'出口 IP', proxyInflight:'占用', proxyFailures:'失败',
     proxyCooldown:'冷却', proxyType:'类型', proxyProtocol:'协议', proxyBackend:'后端',
@@ -57,6 +60,9 @@
   };
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
+    cpaStatus:'CPA credentials', cpaRefresh:'Refresh', cpaEmail:'Email', cpaExpired:'Expires', cpaFile:'File',
+    cpaNone:'No exported credentials yet', cpaSyncOn:'Remote sync', cpaSyncOff:'Remote sync disabled',
+    cpaSyncOk:'target reachable', cpaSyncFail:'target unreachable', cpaFailed:'Export failed', cpaCount:'files',
     proxyEmpty:'No proxy nodes', proxyNode:'Node', proxyRunHealth:'Runtime health', proxyProbeStatus:'Probe status',
     proxyLatency:'Probe latency', proxyExitIP:'Exit IP', proxyInflight:'Inflight', proxyFailures:'Failures',
     proxyCooldown:'Cooldown', proxyType:'Type', proxyProtocol:'Protocol', proxyBackend:'Backend',
@@ -192,6 +198,25 @@
     proxySection.appendChild(shell);
   }
 
+  // CPA 凭据状态：本地导出清单 + 远程同步可达性。
+  if (proxySection) {
+    const cpaShell = document.createElement('div');
+    cpaShell.className = 'proxy-status-shell';
+    cpaShell.innerHTML = `
+      <div class="proxy-status-head">
+        <strong data-i18n="cpaStatus">${t('cpaStatus')}</strong>
+        <div class="proxy-status-actions">
+          <button type="button" id="cpaRefreshBtn" class="mini-btn"><span data-i18n="cpaRefresh">${t('cpaRefresh')}</span></button>
+        </div>
+      </div>
+      <div id="cpaSummary" class="proxy-summary"></div>
+      <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
+        <th data-i18n="cpaEmail">${t('cpaEmail')}</th><th data-i18n="cpaExpired">${t('cpaExpired')}</th>
+        <th data-i18n="cpaFile">${t('cpaFile')}</th>
+      </tr></thead><tbody id="cpaRows"></tbody></table></div>`;
+    proxySection.appendChild(cpaShell);
+  }
+
   function esc(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function renderSourceSummary(data) {
     const target = document.getElementById('proxySourceSummary'); if (!target) return;
@@ -234,7 +259,44 @@
       </tr>`;
     }).join('');
   }
-  async function refreshProxyStatus() { try { const r = await fetch('/api/proxy-pool/status'); if (!r.ok) return; renderProxyStatus(await r.json()); } catch (_) {} }
+  async function refreshProxyStatus() { try { const r = await fetch('./api/proxy-pool/status'); if (!r.ok) return; renderProxyStatus(await r.json()); } catch (_) {} }
+
+  function renderCpaStatus(data) {
+    const rows = document.getElementById('cpaRows');
+    const summary = document.getElementById('cpaSummary');
+    if (!rows || !summary) return;
+    const items = Array.isArray(data.credentials) ? data.credentials : [];
+    const failed = Array.isArray(data.failed) ? data.failed : [];
+    const sync = data.sync || {};
+    const parts = [];
+    parts.push(`${data.count || 0} ${t('cpaCount')}`);
+    if (!data.export_enabled) parts.push('⚠️ export disabled');
+    if (sync.enabled) {
+      const state = sync.reachable === true ? t('cpaSyncOk') : (sync.reachable === false ? t('cpaSyncFail') : '—');
+      parts.push(`${t('cpaSyncOn')}: ${sync.target || '—'} · ${state}${sync.error ? ' · ' + sync.error : ''}`);
+    } else {
+      parts.push(t('cpaSyncOff'));
+    }
+    if (failed.length) parts.push(`${t('cpaFailed')}: ${failed.length}`);
+    summary.textContent = parts.join(' · ');
+    if (!items.length) {
+      rows.innerHTML = `<tr><td colspan="3" class="proxy-empty">${esc(t('cpaNone'))}</td></tr>`;
+      return;
+    }
+    rows.innerHTML = items.map(item => `<tr>
+      <td>${esc(item.email || '—')}</td>
+      <td>${esc(item.expired || '—')}</td>
+      <td title="${esc(item.file)}">${esc(item.file)}</td>
+    </tr>`).join('');
+  }
+  async function refreshCpaStatus() {
+    try {
+      const r = await fetch('./api/cpa/status');
+      if (!r.ok) return;
+      renderCpaStatus(await r.json());
+    } catch (_) {}
+  }
+
   async function proxyAction(path) {
     if (dirty.size && !await saveConfig()) return;
     const reload = document.getElementById('proxyReloadBtn'); const test = document.getElementById('proxyTestBtn');
@@ -244,8 +306,12 @@
     finally { if (reload) reload.disabled = !!running; if (test) test.disabled = !!running; }
   }
   const reloadBtn = document.getElementById('proxyReloadBtn'); const testBtn = document.getElementById('proxyTestBtn');
-  if (reloadBtn) reloadBtn.onclick = () => proxyAction('/api/proxy-pool/reload');
-  if (testBtn) testBtn.onclick = () => proxyAction('/api/proxy-pool/test');
-  loadConfig().catch(e => setNotice(e.message,true)); refreshProxyStatus();
+  if (reloadBtn) reloadBtn.onclick = () => proxyAction('./api/proxy-pool/reload');
+  if (testBtn) testBtn.onclick = () => proxyAction('./api/proxy-pool/test');
+  const cpaRefreshBtn = document.getElementById('cpaRefreshBtn');
+  if (cpaRefreshBtn) cpaRefreshBtn.onclick = () => refreshCpaStatus();
+  loadConfig().catch(e => setNotice(e.message,true)); refreshProxyStatus(); refreshCpaStatus();
   setInterval(() => { if (reloadBtn) reloadBtn.disabled = !!running; if (testBtn) testBtn.disabled = !!running; refreshProxyStatus(); }, 2000);
+  // CPA 状态含远程 SSH 探测，开销较大，用较低频率轮询。
+  setInterval(refreshCpaStatus, 15000);
 })();

@@ -31,6 +31,11 @@ class CpaExportSettings:
     force_standalone: bool
     cookie_inject: bool
     tools_dir: str
+    # 远程 CPA 同步：CPA 部署在另一台服务器时，导出后自动把凭据推过去。
+    sync_enabled: bool = False
+    sync_target: str = ""
+    sync_auth_dir: str = ""
+    sync_use_sudo: bool = True
 
     @classmethod
     def from_config(cls, config):
@@ -64,6 +69,10 @@ class CpaExportSettings:
             force_standalone=bool(cfg.get("cpa_force_standalone", True)),
             cookie_inject=bool(cfg.get("cpa_mint_cookie_inject", True)),
             tools_dir=str(cfg.get("api_reverse_tools") or "").strip(),
+            sync_enabled=bool(cfg.get("cpa_sync_enabled", False)),
+            sync_target=str(cfg.get("cpa_sync_target") or "").strip(),
+            sync_auth_dir=str(cfg.get("cpa_sync_auth_dir") or "").strip(),
+            sync_use_sudo=bool(cfg.get("cpa_sync_use_sudo", True)),
         )
 
 
@@ -199,11 +208,31 @@ def export_cpa_xai_for_account(email, password, page=None, cookies=None, sso=Non
     if not result.get("ok"):
         fail_path = settings.auth_dir / "cpa_auth_failed.txt"
         try:
+            # 错误信息可能含换行（如 DrissionPage 的多行报错），必须压平，
+            # 否则会破坏 "----" 分隔的行格式，导致后续解析串行。
+            error_text = " ".join(str(result.get("error") or "unknown").split()) or "unknown"
             with FileLock(str(fail_path) + ".lock", timeout=30):
                 with open(str(fail_path), "a", encoding="utf-8") as handle:
-                    handle.write("%s----%s----%s\n" % (email, result.get("error") or "unknown", int(time.time())))
+                    handle.write("%s----%s----%s\n" % (email, error_text, int(time.time())))
                     handle.flush()
                     os.fsync(handle.fileno())
         except Exception as exc:
             log("[cpa] failed to persist failure record: %s" % exc)
+        return result
+
+    # 远程同步：仅导出成功后才推送。失败不影响导出结果 —— 凭据已在本机，
+    # 可随时用 cpa_sync.py 补同步，不应因网络问题把成功标记成失败。
+    if settings.sync_enabled and settings.sync_target and settings.sync_auth_dir:
+        try:
+            import cpa_sync
+            cpa_sync.sync_files(
+                settings.sync_target, settings.sync_auth_dir,
+                [result["path"]], use_sudo=settings.sync_use_sudo,
+                log=lambda message: log("[cpa] %s" % message),
+            )
+            result["synced_to"] = "%s:%s" % (settings.sync_target, settings.sync_auth_dir)
+        except Exception as exc:
+            result["sync_error"] = str(exc)
+            result["warning"] = True
+            log("[cpa] remote sync failed: %s" % exc)
     return result

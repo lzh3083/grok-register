@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import datetime
+import json
 import threading
 import time
 from pathlib import Path
@@ -135,11 +136,11 @@ def _run_job(count: int, controller: Any, accounts_file: str) -> None:
 def index():
     html = INDEX_HTML.read_text(encoding="utf-8")
     if PROXY_POOL_CSS.is_file():
-        html = html.replace("</head>", '<link rel="stylesheet" href="/proxy-pool.css">\n</head>', 1)
+        html = html.replace("</head>", '<link rel="stylesheet" href="./proxy-pool.css">\n</head>', 1)
     if PROXY_POOL_JS.is_file():
-        html = html.replace("</body>", '<script src="/proxy-pool.js"></script>\n</body>', 1)
+        html = html.replace("</body>", '<script src="./proxy-pool.js"></script>\n</body>', 1)
     if OUTLOOK_MAILBOX_JS.is_file():
-        html = html.replace("</body>", '<script src="/outlook-mailbox.js"></script>\n</body>', 1)
+        html = html.replace("</body>", '<script src="./outlook-mailbox.js"></script>\n</body>', 1)
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
@@ -288,6 +289,90 @@ def proxy_pool_status():
     from proxy_pool import manager_snapshot
     cfg = _load_config_if_idle()
     return {"ok": True, **manager_snapshot(config=cfg)}
+
+
+@app.get("/api/cpa/status")
+def cpa_status():
+    """CPA 凭据导出与远程同步状态。
+
+    只读接口：扫描本地导出目录，并在启用远程同步时顺带确认目标可达性。
+    远程探测失败不应让整个接口报错 —— 面板仍需展示本地凭据情况。
+    """
+    cfg = _load_config_if_idle()
+    auth_dir = Path(str(cfg.get("cpa_auth_dir") or "./cpa_auths")).expanduser()
+    if not auth_dir.is_absolute():
+        auth_dir = (Path(engine.__file__).resolve().parent / auth_dir).resolve()
+
+    credentials = []
+    for path in sorted(auth_dir.glob("xai-*.json")):
+        entry = {"file": path.name, "email": "", "expired": "", "size": 0}
+        try:
+            stat = path.stat()
+            entry["size"] = int(stat.st_size)
+            entry["mtime"] = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            entry["email"] = str(data.get("email") or "")
+            entry["expired"] = str(data.get("expired") or "")
+        except Exception as exc:
+            entry["error"] = str(exc)
+        credentials.append(entry)
+
+    failed_file = auth_dir / "cpa_auth_failed.txt"
+    failed = []
+    if failed_file.is_file():
+        # 失败记录是追加写的流水账，补导出成功后旧记录仍在。只展示
+        # "至今仍无凭据" 的邮箱，否则面板会误报已解决的问题。
+        succeeded = {str(item.get("email") or "").strip().lower() for item in credentials}
+        seen_failed = set()
+        try:
+            for line in failed_file.read_text(encoding="utf-8").splitlines():
+                parts = line.split("----")
+                if not parts or not parts[0].strip():
+                    continue
+                email = parts[0].strip()
+                key = email.lower()
+                if key in succeeded or key in seen_failed:
+                    continue
+                # 旧记录可能含换行残片，只保留形似邮箱的条目
+                if "@" not in email:
+                    continue
+                seen_failed.add(key)
+                failed.append({
+                    "email": email,
+                    "error": parts[1].strip() if len(parts) > 1 else "",
+                })
+        except Exception:
+            pass
+
+    sync = {
+        "enabled": bool(cfg.get("cpa_sync_enabled", False)),
+        "target": str(cfg.get("cpa_sync_target") or ""),
+        "auth_dir": str(cfg.get("cpa_sync_auth_dir") or ""),
+        "reachable": None,
+        "error": "",
+    }
+    if sync["enabled"] and sync["target"] and sync["auth_dir"]:
+        try:
+            import cpa_sync
+            cpa_sync.check_target(
+                sync["target"], sync["auth_dir"],
+                use_sudo=bool(cfg.get("cpa_sync_use_sudo", True)),
+                log=lambda _message: None,
+            )
+            sync["reachable"] = True
+        except Exception as exc:
+            sync["reachable"] = False
+            sync["error"] = str(exc)
+
+    return {
+        "ok": True,
+        "export_enabled": bool(cfg.get("cpa_export_enabled", False)),
+        "auth_dir": str(auth_dir),
+        "count": len(credentials),
+        "credentials": credentials,
+        "failed": failed,
+        "sync": sync,
+    }
 
 
 @app.post("/api/proxy-pool/reload")

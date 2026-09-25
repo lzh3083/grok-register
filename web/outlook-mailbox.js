@@ -71,7 +71,7 @@
 
   async function loadPool() {
     setStatus('Loading…', false);
-    const response = await fetch('/api/mailboxes/outlook', {cache: 'no-store'});
+    const response = await fetch('./api/mailboxes/outlook', {cache: 'no-store'});
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'Failed to load Outlook mailbox pool');
     editor.value = data.data || '';
@@ -81,14 +81,14 @@
 
   async function savePool() {
     setStatus('Saving…', false);
-    const configResponse = await fetch('/api/config', {
+    const configResponse = await fetch('./api/config', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({outlook_accounts_file: pathInput.value || './output/mailboxes/outlook-accounts.txt'})
     });
     const configData = await configResponse.json();
     if (!configResponse.ok) throw new Error(configData.detail || 'Failed to save Outlook pool path');
-    const response = await fetch('/api/mailboxes/outlook', {
+    const response = await fetch('./api/mailboxes/outlook', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({data: editor.value})
@@ -102,7 +102,7 @@
     setStatus('Testing mailbox access…', false);
     testBtn.disabled = true;
     try {
-      const response = await fetch('/api/mailboxes/outlook/test', {
+      const response = await fetch('./api/mailboxes/outlook/test', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         cache: 'no-store',

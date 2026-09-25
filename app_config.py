@@ -68,6 +68,14 @@ DEFAULT_CONFIG = {
     "cpa_auth_dir": "./cpa_auths",
     "cpa_copy_to_hotload": False,
     "cpa_hotload_dir": "",
+    # ---- 远程 CPA 同步（本仓库新增）----
+    # cpa_copy_to_hotload 只能复制到本机目录；CPA 部署在另一台服务器时
+    # （Docker 卷映射）用它同步。实测 CPA 会自动扫描 auth 目录，新增
+    # 凭据文件即生效，无需重启。
+    "cpa_sync_enabled": False,
+    "cpa_sync_target": "",
+    "cpa_sync_auth_dir": "",
+    "cpa_sync_use_sudo": True,
     "cpa_base_url": "https://cli-chat-proxy.grok.com/v1",
     "cpa_proxy": "",
     "cpa_headless": False,
@@ -161,6 +169,7 @@ def validate_config_structure(raw):
         "grok2api_allow_legacy_full_save", "cpa_export_enabled",
         "cpa_copy_to_hotload", "cpa_headless", "cpa_force_standalone",
         "cpa_mint_cookie_inject", "multi_thread_enabled",
+        "cpa_sync_enabled", "cpa_sync_use_sudo",
         "proxy_pool_probe_dual_stack", "proxy_pool_persist_health",
         "proxy_pool_subscription_public_only", "proxy_pool_preflight_enabled",
         "us_consistency_enabled", "lajiao_require_residential",
