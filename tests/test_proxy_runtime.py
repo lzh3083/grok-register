@@ -45,3 +45,87 @@ class ProxyRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeOptions:
+    """记录 set_proxy / set_argument 的调用，用于验证代理写入路径。"""
+
+    def __init__(self):
+        self.proxy_calls = []
+        self.arg_calls = []
+
+    def set_proxy(self, value):
+        self.proxy_calls.append(value)
+
+    def set_argument(self, *args):
+        self.arg_calls.append(args)
+
+
+class BrowserProxyOptionTests(unittest.TestCase):
+    """DrissionPage 的 set_proxy() 不支持 socks5，会静默忽略并让浏览器走直连。
+
+    实测表现为 ERR_CONNECTION_RESET，极难排查。这里钉住：
+    socks* 必须走 --proxy-server 启动参数，其它协议保持原路径。
+    """
+
+    def test_socks5_uses_start_argument_not_set_proxy(self):
+        options = _FakeOptions()
+        browser_runtime.apply_browser_proxy_option(options, "socks5://1.2.3.4:7001")
+        self.assertEqual(options.proxy_calls, [])
+        self.assertEqual(options.arg_calls, [("--proxy-server=socks5://1.2.3.4:7001",)])
+
+    def test_socks5h_uses_start_argument(self):
+        options = _FakeOptions()
+        browser_runtime.apply_browser_proxy_option(options, "socks5h://1.2.3.4:7001")
+        self.assertEqual(options.proxy_calls, [])
+        self.assertTrue(options.arg_calls)
+
+    def test_socks4_uses_start_argument(self):
+        options = _FakeOptions()
+        browser_runtime.apply_browser_proxy_option(options, "socks4://1.2.3.4:1080")
+        self.assertEqual(options.proxy_calls, [])
+        self.assertTrue(options.arg_calls)
+
+    def test_http_still_uses_set_proxy(self):
+        options = _FakeOptions()
+        browser_runtime.apply_browser_proxy_option(options, "http://1.2.3.4:8080")
+        self.assertEqual(options.proxy_calls, ["http://1.2.3.4:8080"])
+        self.assertEqual(options.arg_calls, [])
+
+    def test_http_with_auth_still_uses_set_proxy(self):
+        options = _FakeOptions()
+        browser_runtime.apply_browser_proxy_option(options, "http://u:p@1.2.3.4:8080")
+        self.assertEqual(options.proxy_calls, ["http://u:p@1.2.3.4:8080"])
+
+    def test_empty_proxy_is_noop(self):
+        options = _FakeOptions()
+        browser_runtime.apply_browser_proxy_option(options, "")
+        self.assertEqual(options.proxy_calls, [])
+        self.assertEqual(options.arg_calls, [])
+
+    def test_falls_back_to_argument_when_set_proxy_absent(self):
+        class NoSetProxy:
+            def __init__(self):
+                self.arg_calls = []
+
+            def set_argument(self, *args):
+                self.arg_calls.append(args)
+
+        options = NoSetProxy()
+        browser_runtime.apply_browser_proxy_option(options, "http://1.2.3.4:8080")
+        self.assertEqual(options.arg_calls, [("--proxy-server=http://1.2.3.4:8080",)])
+
+    def test_set_proxy_exception_falls_back_to_argument(self):
+        class Boom:
+            def __init__(self):
+                self.arg_calls = []
+
+            def set_proxy(self, _value):
+                raise RuntimeError("unsupported")
+
+            def set_argument(self, *args):
+                self.arg_calls.append(args)
+
+        options = Boom()
+        browser_runtime.apply_browser_proxy_option(options, "http://1.2.3.4:8080")
+        self.assertEqual(options.arg_calls, [("--proxy-server=http://1.2.3.4:8080",)])

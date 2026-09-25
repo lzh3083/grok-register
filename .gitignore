@@ -41,3 +41,4 @@ logs/traffic_history.json
 
 # 控制台日志落盘（含账号邮箱等运行信息）
 logs/console-*.log
+novproxy_nodes.txt

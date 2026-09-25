@@ -158,9 +158,25 @@ def prepare_browser_proxy(use_proxy=True, log_callback=None):
 
 
 def apply_browser_proxy_option(options, proxy):
+    """把代理写进 Chromium 启动参数。
+
+    DrissionPage 的 ChromiumOptions.set_proxy() **不支持 socks5** —— 它只会
+    打印 "this proxy is not supported for the time being" 然后静默忽略，
+    浏览器实际走直连（表现为 ERR_CONNECTION_RESET，极难排查）。
+
+    而 Chromium 原生的 --proxy-server 是支持 socks5 的。所以这里对
+    socks* 一律绕开 set_proxy，直接用启动参数。
+    """
     if not proxy:
         return
-    if hasattr(options, "set_proxy"):
+    scheme = ""
+    try:
+        parsed = urllib.parse.urlsplit(str(proxy))
+        scheme = (parsed.scheme or "").lower()
+    except Exception:
+        scheme = ""
+    is_socks = scheme.startswith("socks")
+    if hasattr(options, "set_proxy") and not is_socks:
         try:
             options.set_proxy(proxy)
             return
