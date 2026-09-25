@@ -681,6 +681,62 @@ def tk_option_menu(parent, variable, values, width=12):
 
 
 
+def _cpa_export_is_transport_failure(result, exc=None):
+    """判断导出失败是否由代理传输引起（值得换节点重试）。
+
+    典型场景：注册过程耗时较长，等导出时当初那个住宅节点已经失效
+    （NovProxy 返回 "connect proxy error"）。注册本身是成功的，只是
+    导出这一跳的网络坏了 —— 换一个健康节点就能救回来。
+    """
+    try:
+        from proxy_pool_v3 import is_proxy_transport_exception
+    except Exception:
+        return False
+    if exc is not None and is_proxy_transport_exception(exc):
+        return True
+    if not isinstance(result, dict):
+        return False
+    if result.get("ok"):
+        return False
+    detail = str(result.get("error") or result.get("reason") or "")
+    return bool(detail) and is_proxy_transport_exception(detail)
+
+
+def _with_fresh_lease(fn, logger, cancel_callback=None):
+    """在一个全新的代理租约下执行 fn。
+
+    调用方当前可能仍持有注册用租约（已失效）。这里必须先把旧租约释放，
+    否则 begin_registration_slot 会因「当前线程已有未释放的租约」而拒绝。
+    取到新租约后执行 fn，最后无条件归还。
+    """
+    import proxy_pool_v3
+    old_lease = proxy_pool_v3.current_proxy_lease()
+    if old_lease is not None:
+        try:
+            proxy_pool_v3.end_registration_slot(success=False)
+        except Exception as exc:
+            logger(f"[Debug] 释放旧代理租约失败: {exc}")
+    lease = None
+    try:
+        lease = proxy_pool_v3.begin_registration_slot(
+            slot_index=0, attempt_index=99, worker_key="cpa-export",
+            log=logger, cancel_callback=cancel_callback,
+        )
+    except Exception as exc:
+        logger(f"[!] 导出重试无法获取新代理租约: {exc}")
+        return None
+    if lease is None:
+        logger("[Debug] 导出重试未取到新租约（非池模式），按原代理重试")
+    try:
+        return fn()
+    finally:
+        if lease is not None:
+            try:
+                proxy_pool_v3.end_registration_slot(success=True)
+            except Exception as exc:
+                logger(f"[Debug] 导出重试租约归还失败: {exc}")
+
+
 def maybe_export_cpa_xai_after_success(email, password, sso="", log_callback=None, cancel_callback=None, page_override=None):
     if not bool(config.get("cpa_export_enabled", False)):
         return {"ok": False, "skipped": True, "reason": "disabled"}
@@ -696,17 +752,31 @@ def maybe_export_cpa_xai_after_success(email, password, sso="", log_callback=Non
             current_page = _registration_browser.page
         except Exception:
             current_page = None
-    try:
-        result = export_cpa_xai_for_account(
-            email=email,
-            password=password,
-            page=current_page,
-            sso=sso,
-            config=config,
-            log_callback=logger,
-            cancel_callback=cancel_callback,
-        )
-    except Exception as exc:
+
+    def attempt():
+        try:
+            return export_cpa_xai_for_account(
+                email=email,
+                password=password,
+                page=current_page,
+                sso=sso,
+                config=config,
+                log_callback=logger,
+                cancel_callback=cancel_callback,
+            ), None
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}, exc
+
+    result, exc = attempt()
+    if _cpa_export_is_transport_failure(result, exc):
+        detail = (exc if exc is not None else result.get("error")) or "代理传输失败"
+        logger(f"[!] CPA OIDC 导出遇到代理传输失败，换一个健康节点重试: {detail}")
+        retried = _with_fresh_lease(attempt, logger, cancel_callback=cancel_callback)
+        if retried is not None:
+            result, exc = retried
+            if result.get("ok"):
+                logger("[+] 换节点后 CPA OIDC 导出成功")
+    if exc is not None:
         logger(f"[!] CPA OIDC 导出失败，账号已保留: {exc}")
         return {"ok": False, "error": str(exc)}
     if result.get("ok"):

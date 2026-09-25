@@ -205,6 +205,11 @@ def classify_proxy_network_error(value):
         "tunnel connection failed", "could not connect to proxy", "failed to connect to proxy",
         "err_proxy_connection_failed", "err_tunnel_connection_failed", "connection refused",
         "no route to host", "network is unreachable", "upstream_connect", "http_connect", "socks_connect",
+        # NovProxy 等住宅代理在会话失效/上游不可达时返回的固定文案。
+        # 注意词序是 "connect proxy error" 而非 "connect error"：下面
+        # suspected 里的 "connect error" 匹配不到它，会被误判成应用层
+        # 错误，导致失效节点不被剔除、后续账号继续选中同一个死节点。
+        "connect proxy error", "proxy connect error",
     )
     if any(marker in text for marker in hard):
         return "hard_transport"
