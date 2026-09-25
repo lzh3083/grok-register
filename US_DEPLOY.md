@@ -178,7 +178,44 @@ cd <项目目录>
 只看配置文件不足以证明一致性补丁生效，必须实际启动验证。
 退出码 0 表示全部就绪；非 0 表示存在阻塞项（会明确指出是哪一项）。
 
-### 步骤 2：验证代理可用性与一致性
+### 步骤 2：准备代理节点
+
+#### 方案 A：MooProxy（美国住宅，推荐）
+
+入口从本机直连时**TCP 能建立但代理握手无响应**，必须经干净出口中转，
+因此需要本地链式桥：
+
+```
+浏览器 → 本地桥(8890) → SOCKS5 中转(1080) → MooProxy → 目标站点
+```
+
+```bash
+# 1. 启动本地链式桥（需先有可用的 SOCKS5 出口）
+./.venv/bin/python mooproxy_bridge.py --via socks5h://127.0.0.1:1080 serve --port 8890 &
+
+# 2. 生成节点：会逐个探测真实出口，自动剔除失效与非目标国家节点
+./.venv/bin/python mooproxy_bridge.py \
+    --user <账号> --pass <密码> --state "New York" \
+    generate --num 5 --out mooproxy_nodes.txt
+
+# 3. 配置指向节点文件
+#    proxy_pool_file = "./mooproxy_nodes.txt"
+```
+
+**三个实测特性**（代码已容错，但值得了解）：
+
+| 现象 | 说明 |
+|---|---|
+| 生成接口返回空列表 | 并非总是限流，重试通常即可成功 |
+| 指定 `country=US` 仍混入他国 | 实测出现过印尼、几内亚节点，故按**实际出口**过滤 |
+| `state` 参数不生效 | 请求 New York 会分到 Nevada/Texas，地区随机 |
+
+最后一点很关键：**时区不能按 `state` 参数设置**，必须按真实出口地区对齐。
+代码会在启动浏览器前探测出口并把时区回写到该州对应时区
+（如加州出口 → `America/Los_Angeles`），否则会出现
+「IP 在加州、时区却是纽约」这类矛盾特征。
+
+#### 方案 B：辣椒HTTP
 
 ```bash
 # 提取并校验节点
@@ -204,6 +241,22 @@ cd <项目目录>
 ```
 
 然后访问 `http://127.0.0.1:8092`。
+
+### 步骤 4：确认真实可用性
+
+注册成功不等于凭据可用，建议实际调用一次 API 验证：
+
+```bash
+./.venv/bin/python -c "
+import json, glob, urllib.request
+d = json.load(open(glob.glob('cpa_auths/*.json')[0]))
+req = urllib.request.Request('https://cli-chat-proxy.grok.com/v1/models',
+    headers={'Authorization': 'Bearer ' + d['access_token']})
+print(json.loads(urllib.request.urlopen(req, timeout=45).read())['data'])
+"
+```
+
+期望看到模型列表（如 `grok-4.7`）。
 
 ## 六、配置说明
 
