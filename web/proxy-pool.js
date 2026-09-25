@@ -55,6 +55,10 @@
     trafficUp:'上行', trafficDown:'下行', trafficTotal:'合计', trafficAccounts:'成功账号',
     trafficNone:'本批暂无流量记录', trafficAvgBatch:'历史批次均值', trafficAvgAccount:'每账号均值',
     proxyEmpty:'暂无代理节点', proxyNode:'节点', proxyRunHealth:'运行健康', proxyProbeStatus:'探测状态',
+    proxyDetail:'详细', proxyStatusCol:'状态', proxyNodesUnit:'个节点', proxyUsable:'可用',
+    proxyUnhealthy:'异常', proxyCooling:'冷却中', proxyRetired:'已退役', proxyDisabled:'已停用',
+    proxyHealthy:'健康',
+    proxyNodeUnit:'节点',
     proxyLatency:'探测延迟', proxyExitIP:'出口 IP', proxyInflight:'占用', proxyFailures:'失败',
     proxyCooldown:'冷却', proxyType:'类型', proxyProtocol:'协议', proxyBackend:'后端',
     proxySourceSummary:'订阅解析', proxyError:'最近错误', probeHealthy:'正常', probeUnhealthy:'异常',
@@ -70,6 +74,10 @@
     trafficUp:'Up', trafficDown:'Down', trafficTotal:'Total', trafficAccounts:'Accounts',
     trafficNone:'No traffic recorded for this batch', trafficAvgBatch:'Avg per batch', trafficAvgAccount:'Avg per account',
     proxyEmpty:'No proxy nodes', proxyNode:'Node', proxyRunHealth:'Runtime health', proxyProbeStatus:'Probe status',
+    proxyDetail:'Details', proxyStatusCol:'Status', proxyNodesUnit:'nodes', proxyUsable:'usable',
+    proxyUnhealthy:'unhealthy', proxyCooling:'cooling', proxyRetired:'retired', proxyDisabled:'disabled',
+    proxyHealthy:'healthy',
+    proxyNodeUnit:'Node',
     proxyLatency:'Probe latency', proxyExitIP:'Exit IP', proxyInflight:'Inflight', proxyFailures:'Failures',
     proxyCooldown:'Cooldown', proxyType:'Type', proxyProtocol:'Protocol', proxyBackend:'Backend',
     proxySourceSummary:'Subscription parse', proxyError:'Last error', probeHealthy:'Healthy', probeUnhealthy:'Unhealthy',
@@ -183,25 +191,42 @@
   if (proxySection) {
     const shell = document.createElement('div');
     shell.className = 'proxy-status-shell';
+    // 默认只展示关键列。其余列（协议/后端/探针明细/失败分解等）绝大多数
+    // 时候是空值或 0，堆在一起反而看不清状态，收进「详细」里按需展开。
     shell.innerHTML = `
       <div class="proxy-status-head">
         <strong data-i18n="proxyStatus">${t('proxyStatus')}</strong>
         <div class="proxy-status-actions">
+          <button type="button" id="proxyDetailBtn" class="mini-btn"><span data-i18n="proxyDetail">${t('proxyDetail')}</span></button>
           <button type="button" id="proxyReloadBtn" class="mini-btn"><span data-i18n="proxyReload">${t('proxyReload')}</span></button>
           <button type="button" id="proxyTestBtn" class="mini-btn"><span data-i18n="proxyTest">${t('proxyTest')}</span></button>
         </div>
       </div>
       <div id="proxyPoolSummary" class="proxy-summary"></div>
       <div id="proxySourceSummary" class="proxy-summary"></div>
-      <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
-        <th data-i18n="proxyNode">${t('proxyNode')}</th><th data-i18n="proxyProtocol">${t('proxyProtocol')}</th>
-        <th data-i18n="proxyBackend">${t('proxyBackend')}</th><th data-i18n="proxyType">${t('proxyType')}</th>
-        <th data-i18n="proxyProbeStatus">${t('proxyProbeStatus')}</th><th data-i18n="proxyRunHealth">${t('proxyRunHealth')}</th>
-        <th data-i18n="proxyLatency">${t('proxyLatency')}</th><th data-i18n="proxyExitIP">${t('proxyExitIP')}</th>
-        <th data-i18n="proxyInflight">${t('proxyInflight')}</th><th data-i18n="proxyFailures">${t('proxyFailures')}</th>
-        <th data-i18n="proxyCooldown">${t('proxyCooldown')}</th><th data-i18n="proxyError">${t('proxyError')}</th>
+      <div class="proxy-table-wrap"><table class="proxy-table" id="proxyPoolTable"><thead><tr>
+        <th data-i18n="proxyNode">${t('proxyNode')}</th>
+        <th data-i18n="proxyExitIP">${t('proxyExitIP')}</th>
+        <th data-i18n="proxyRunHealth">${t('proxyRunHealth')}</th>
+        <th data-i18n="proxyStatusCol">${t('proxyStatusCol')}</th>
+        <th class="proxy-adv" data-i18n="proxyProtocol">${t('proxyProtocol')}</th>
+        <th class="proxy-adv" data-i18n="proxyBackend">${t('proxyBackend')}</th>
+        <th class="proxy-adv" data-i18n="proxyType">${t('proxyType')}</th>
+        <th class="proxy-adv" data-i18n="proxyProbeStatus">${t('proxyProbeStatus')}</th>
+        <th class="proxy-adv" data-i18n="proxyLatency">${t('proxyLatency')}</th>
+        <th class="proxy-adv" data-i18n="proxyInflight">${t('proxyInflight')}</th>
+        <th class="proxy-adv" data-i18n="proxyFailures">${t('proxyFailures')}</th>
+        <th class="proxy-adv" data-i18n="proxyCooldown">${t('proxyCooldown')}</th>
+        <th class="proxy-adv" data-i18n="proxyError">${t('proxyError')}</th>
       </tr></thead><tbody id="proxyPoolRows"></tbody></table></div>`;
     proxySection.appendChild(shell);
+    const detailBtn = document.getElementById('proxyDetailBtn');
+    if (detailBtn) detailBtn.onclick = () => {
+      const table = document.getElementById('proxyPoolTable');
+      if (!table) return;
+      const on = table.classList.toggle('show-adv');
+      detailBtn.classList.toggle('active', on);
+    };
   }
 
   // CPA 凭据状态：本地导出清单 + 远程同步可达性。
@@ -263,26 +288,90 @@
     const p = node[key] || {}; if (!p.status || p.status === 'unknown') return `${key === 'ipv4_probe' ? 'IPv4' : 'IPv6'} —`;
     return `${key === 'ipv4_probe' ? 'IPv4' : 'IPv6'} ${probeText(p.status)}${p.latency_ms ? ' '+p.latency_ms+'ms' : ''}${p.exit_ip ? ' '+p.exit_ip : ''}`;
   }
+  // 代理地址里含明文账密，展示时必须遮罩。
+  // MooProxy 的节点靠 session-XXXX 区分，把它提出来当标签最直观。
+  function maskProxy(raw) {
+    const text = String(raw || '');
+    try {
+      const m = text.match(/^([a-z0-9+.-]+:\/\/)([^@]*)@(.+)$/i);
+      if (!m) return text;
+      const user = (m[2].split(':')[0] || '').replace(/\/\/.*$/, '');
+      return `${m[1]}${user ? user + ':***' : '***'}@${m[3]}`;
+    } catch (_) {
+      return text.replace(/\/\/[^@]*@/, '//***@');
+    }
+  }
+  // session 串（如 NrQFyoku）对人不直观，改用序号做主标识，
+  // 具体 session 放进 tooltip，需要排查时仍能看到。
+  function nodeSession(node) {
+    try {
+      const cred = decodeURIComponent(String(node.proxy || '').split('@')[0] || '');
+      const m = cred.match(/session-([A-Za-z0-9]+)/);
+      return m ? m[1] : '';
+    } catch (_) { return ''; }
+  }
+  function nodeLabel(node, index) {
+    if (node.name) return node.name;
+    return `${t('proxyNodeUnit')} ${index + 1}`;
+  }
+  function nodeTooltip(node, index) {
+    const session = nodeSession(node);
+    return [`${t('proxyNodeUnit')} ${index + 1}`, session ? `session: ${session}` : '', maskProxy(node.proxy)]
+      .filter(Boolean).join('\n');
+  }
+  function nodeState(node) {
+    // 把一堆布尔/计数压成一个可读状态
+    if (node.retired) return { text: t('proxyRetired'), cls: 'bad' };
+    if (!node.enabled) return { text: t('proxyDisabled'), cls: 'bad' };
+    if (node.cooldown_sec) return { text: `${t('proxyCooling')} ${node.cooldown_sec}s`, cls: 'bad' };
+    if (node.probe_status === 'unhealthy' || node.probe_status === 'unavailable') return { text: probeText(node.probe_status), cls: 'bad' };
+    if (node.failure_count || node.transport_failures) return { text: `${t('proxyFailures')} ${node.failure_count || 0}`, cls: '' };
+    if (node.probe_status === 'healthy') return { text: probeText('healthy'), cls: 'good' };
+    return { text: probeText('unknown'), cls: '' };
+  }
   function renderProxyStatus(data) {
     const rows = document.getElementById('proxyPoolRows'); const summary = document.getElementById('proxyPoolSummary'); if (!rows || !summary) return;
-    const nodes = Array.isArray(data.nodes) ? data.nodes : []; summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}`; renderSourceSummary(data);
-    if (!nodes.length) { rows.innerHTML = `<tr><td colspan="12" class="proxy-empty">${esc(t('proxyEmpty'))}</td></tr>`; return; }
-    rows.innerHTML = nodes.map(node => {
+    const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    // 按真实状态计数。注意「可用」不能只看 enabled/retired —— 把从未探测过
+    // 的节点算作可用会误导：实测有整批节点已失效，面板却仍显示全部可用。
+    const healthy = nodes.filter(n => n.probe_status === 'healthy').length;
+    const cooling = nodes.filter(n => n.cooldown_sec).length;
+    const flagged = nodes.filter(n => n.probe_status === 'unhealthy' || n.probe_status === 'unavailable').length;
+    const unprobed = nodes.filter(n => !n.probe_status || n.probe_status === 'unknown').length;
+    const disabled = nodes.filter(n => !n.enabled || n.retired).length;
+    const parts = [`${data.mode || 'auto'}`, `${nodes.length} ${t('proxyNodesUnit')}`];
+    if (healthy) parts.push(`${healthy} ${t('proxyHealthy')}`);
+    if (flagged) parts.push(`${flagged} ${t('proxyUnhealthy')}`);
+    if (cooling) parts.push(`${cooling} ${t('proxyCooling')}`);
+    if (disabled) parts.push(`${disabled} ${t('proxyDisabled')}`);
+    if (unprobed) parts.push(`${unprobed} ${t('probeUnknown')}`);
+    summary.textContent = parts.join(' · ');
+    renderSourceSummary(data);
+    if (!nodes.length) { rows.innerHTML = `<tr><td colspan="13" class="proxy-empty">${esc(t('proxyEmpty'))}</td></tr>`; return; }
+    rows.innerHTML = nodes.map((node, index) => {
       const status = node.probe_status === 'healthy' ? 'good' : (node.probe_status === 'unhealthy' || node.probe_status === 'unavailable') ? 'bad' : '';
-      const label = node.name ? `${node.name} · ${node.proxy}` : node.proxy; const samples = Number(node.business_samples || 0);
+      const label = nodeLabel(node, index); const samples = Number(node.business_samples || 0);
       const health = node.rotating
         ? `${t('proxyGatewayRate')}: ${node.gateway_success_rate == null ? '—' : Math.round(Number(node.gateway_success_rate)*1000)/10+'%'} · exits=${Number(node.exit_successes||0)+Number(node.exit_failures||0)}`
         : (samples > 0 ? `${node.health} · n=${samples}` : `— · ${t('noBusinessSamples')}`);
       const latency = `${familyText(node,'ipv4_probe')} / ${familyText(node,'ipv6_probe')}`;
       const error = node.probe_error || node.last_error || '—';
       const failures = node.rotating ? `${node.exit_failures || 0} exits` : `${node.failure_count || 0} · transport=${node.transport_failures || 0} · config=${node.configuration_failures || 0}`;
+      const state = nodeState(node);
       return `<tr>
-        <td title="${esc(node.id)}"><span class="proxy-dot ${status}"></span>${esc(label)}</td>
-        <td>${esc(node.protocol || '—')}</td><td>${esc(node.backend || 'native')}</td>
-        <td>${node.rotating ? 'rotating gateway' : 'fixed'}</td><td>${esc(probeText(node.probe_status))}</td>
-        <td>${esc(health)}</td><td>${esc(latency)}</td><td>${esc(node.exit_ip || '—')}</td>
-        <td>${esc(node.inflight)}</td><td>${esc(failures)}</td><td>${node.rotating ? 'N/A' : (node.cooldown_sec ? esc(node.cooldown_sec)+' s' : '—')}</td>
-        <td title="${esc(error)}">${esc(error)}</td>
+        <td title="${esc(nodeTooltip(node, index))}"><span class="proxy-dot ${status}"></span>${esc(label)}</td>
+        <td>${esc(node.exit_ip || '—')}</td>
+        <td>${esc(health)}</td>
+        <td><span class="proxy-state ${state.cls}">${esc(state.text)}</span></td>
+        <td class="proxy-adv">${esc(node.protocol || '—')}</td>
+        <td class="proxy-adv">${esc(node.backend || 'native')}</td>
+        <td class="proxy-adv">${node.rotating ? 'rotating gateway' : 'fixed'}</td>
+        <td class="proxy-adv">${esc(probeText(node.probe_status))}</td>
+        <td class="proxy-adv">${esc(latency)}</td>
+        <td class="proxy-adv">${esc(node.inflight)}</td>
+        <td class="proxy-adv">${esc(failures)}</td>
+        <td class="proxy-adv">${node.rotating ? 'N/A' : (node.cooldown_sec ? esc(node.cooldown_sec)+' s' : '—')}</td>
+        <td class="proxy-adv" title="${esc(error)}">${esc(error)}</td>
       </tr>`;
     }).join('');
   }
