@@ -58,11 +58,17 @@ class ParseTests(unittest.TestCase):
 
 class UrlTests(unittest.TestCase):
     def test_builds_url(self):
-        url = novproxy.build_extract_url(novproxy.DEFAULT_API, region="US", num=5, minutes=10)
+        url = novproxy.build_extract_url(novproxy.DEFAULT_API, region="US", num=5, minutes=120)
         self.assertIn("region=US", url)
         self.assertIn("num=5", url)
-        self.assertIn("time=10", url)
+        self.assertIn("time=120", url)
         self.assertIn("type=txt", url)
+
+    def test_defaults_to_120_minutes(self):
+        """time=10 的节点几十秒内就批量失效（实测立即可用仅 5/10），
+        time=120 实测 9/10 可用且端口段独立，所以默认用 120。"""
+        url = novproxy.build_extract_url(novproxy.DEFAULT_API, num=1)
+        self.assertIn("time=120", url)
 
     def test_handles_existing_query(self):
         url = novproxy.build_extract_url("https://x/api?k=v", num=1)
@@ -151,15 +157,40 @@ class VerifyTests(unittest.TestCase):
 
 
 class WriteTests(unittest.TestCase):
-    def test_writes_one_node_per_line(self):
+    def _write(self, nodes, **kwargs):
         import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            path = str(Path(tmp) / "nodes.txt")
-            count = novproxy.write_nodes(path, [
-                {"node": "a:1"}, {"node": "b:2"},
-            ], log=lambda _m: None)
-            self.assertEqual(count, 2)
-            self.assertEqual(Path(path).read_text(encoding="utf-8"), "a:1\nb:2\n")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = str(Path(tmp.name) / "nodes.txt")
+        novproxy.write_nodes(path, nodes, log=lambda _m: None, **kwargs)
+        return Path(path).read_text(encoding="utf-8")
+
+    def test_defaults_to_socks5h(self):
+        """必须写 socks5h://（远端解析）。
+
+        本项目跑在 Clash/Mihomo 类环境，容器 DNS 对多数域名返回 fake-ip
+        （198.18.0.0/15）。socks5:// 会让本地桥先解析出 fake-ip 再交给
+        上游，必然连不上；socks5h:// 把域名交给代理端解析才对。
+        """
+        self.assertEqual(self._write([{"node": "a:1"}, {"node": "b:2"}]),
+                         "socks5h://a:1\nsocks5h://b:2\n")
+
+    def test_upgrades_bare_socks5_to_socks5h(self):
+        """已带 socks5:// 的输入也要升级，否则同样会踩 fake-ip。"""
+        self.assertEqual(self._write([{"node": "socks5://a:1"}]),
+                         "socks5h://a:1\n")
+
+    def test_keeps_socks5h_as_is(self):
+        self.assertEqual(self._write([{"node": "socks5h://a:1"}]), "socks5h://a:1\n")
+
+    def test_does_not_rewrite_other_schemes(self):
+        self.assertEqual(self._write([{"node": "http://a:1"}]), "http://a:1\n")
+
+    def test_accepts_plain_strings(self):
+        self.assertEqual(self._write(["a:1"]), "socks5h://a:1\n")
+
+    def test_custom_scheme(self):
+        self.assertEqual(self._write(["a:1"], scheme="socks5"), "socks5://a:1\n")
 
     def test_empty_list_writes_empty_file(self):
         import tempfile

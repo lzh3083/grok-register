@@ -2,14 +2,15 @@
 
 供应商特点（实测）
 ------------------
-- 提取接口：https://white.novproxy.com/white/api?region=US&num=N&time=10&format=1&type=txt
+- 提取接口：https://white.novproxy.com/white/api?region=US&num=N&time=120&format=1&type=txt
   返回纯文本，一行一个 `host:port`，**无账密**（靠源 IP 白名单）。
 - 入口是机房（Zenlayer 香港等），**出口才是目标国家的住宅 IP**。
   所以不能用入口 IP 判断质量，必须实测出口。
 - 每个 `host:port` 是一个独立会话，出口 IP 各自不同。
-- `time=10` 表示会话存活约 10 分钟；节点会随时间衰减，需在跑批前
-  现场提取并预热。
-- **部分端口首次连接会失败**（实测 50%~80% 立即可用），重试后会通。
+- `time` 是会话存活分钟数。**用 120 而非 10**：实测 time=10 时立即可用率
+  仅 5/10 且几十秒内就批量失效，time=120 时 9/10 立即可用且端口段独立。
+- **部分端口首次连接会失败**，重试后会通；个别出口不在目标国家
+  （实测有节点落到阿塞拜疆），必须按真实出口国家校验后剔除。
 
 因此本工具在生成节点文件前会：
   1. 提取（可多轮，直到凑够目标数量）
@@ -71,14 +72,14 @@ def parse_proxy_lines(text):
     return proxies
 
 
-def build_extract_url(api_base, region="US", num=10, minutes=10, fmt=1, kind="txt"):
+def build_extract_url(api_base, region="US", num=10, minutes=120, fmt=1, kind="txt"):
     base = str(api_base or DEFAULT_API).strip() or DEFAULT_API
     sep = "&" if "?" in base else "?"
     return "%s%sregion=%s&num=%d&time=%d&format=%d&type=%s" % (
         base, sep, region, int(num), int(minutes), int(fmt), kind)
 
 
-def fetch_nodes(api_base, region="US", num=10, minutes=10, timeout=45.0, attempts=3,
+def fetch_nodes(api_base, region="US", num=10, minutes=120, timeout=45.0, attempts=3,
                 delay=6.0, log=_log):
     """提取节点，失败重试。返回去重后的列表。"""
     url = build_extract_url(api_base, region=region, num=num, minutes=minutes)
@@ -184,15 +185,42 @@ def verify_nodes(nodes, expect_country="US", workers=10, timeout=25.0,
     return good, bad
 
 
-def write_nodes(path, good, log=_log):
-    """写节点文件。格式与项目一致：一行一个 host:port。"""
+def write_nodes(path, good, log=_log, scheme="socks5h"):
+    """写节点文件。
+
+    两个都必须做对，否则节点会「连不上但报错不指向原因」：
+
+    1. **必须带 socks5h://（h = hostname，远端解析）**。本项目运行在
+       Clash/Mihomo 类环境里，容器 DNS 对绝大多数域名返回 fake-ip
+       （198.18.0.0/15 虚拟地址）。`socks5://` 会让本地 HTTP 桥先做
+       DNS 解析，拿到 fake-ip 再发给上游代理，结果必然连不上。
+       `socks5h://` 把域名原样交给代理端解析，才是正确做法。
+
+    2. **必须带协议前缀**。裸 `host:port` 会被 parse_subscription_source
+       当成 HTTP 代理，而 NovProxy 只提供 SOCKS5。
+    """
     target = str(path or "").strip()
     if not target:
         raise NovProxyError("未指定输出文件")
     directory = os.path.dirname(os.path.abspath(target))
     if directory:
         os.makedirs(directory, exist_ok=True)
-    lines = [r["node"] for r in good]
+    prefix = str(scheme or "").strip()
+    if prefix and not prefix.endswith("://"):
+        prefix += "://"
+    lines = []
+    for item in good:
+        node = (item.get("node") if isinstance(item, dict) else str(item)) or ""
+        node = node.strip()
+        if not node:
+            continue
+        if "://" in node:
+            # 已有协议前缀：socks5 -> socks5h，避免本地解析拿到 fake-ip
+            if prefix.endswith("socks5h://") and node.startswith("socks5://"):
+                node = "socks5h://" + node[len("socks5://"):]
+            lines.append(node)
+        else:
+            lines.append(prefix + node)
     tmp = target + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + ("\n" if lines else ""))
@@ -205,7 +233,7 @@ def write_nodes(path, good, log=_log):
     return len(lines)
 
 
-def generate(api_base, out_path, region="US", want=10, minutes=10, expect_country="US",
+def generate(api_base, out_path, region="US", want=10, minutes=120, expect_country="US",
              workers=10, timeout=25.0, attempts=3, rounds=3, log=_log):
     """提取 + 验证 + 写文件，直到凑够 want 个或轮次用尽。"""
     collected = []
@@ -296,7 +324,7 @@ def build_parser():
     p_gen.add_argument("--out", default="./novproxy_nodes.txt")
     p_gen.add_argument("--region", default="US")
     p_gen.add_argument("--num", type=int, default=10, help="目标可用节点数")
-    p_gen.add_argument("--minutes", type=int, default=10, help="会话存活分钟数")
+    p_gen.add_argument("--minutes", type=int, default=120, help="会话存活分钟数")
     p_gen.add_argument("--expect", default="US", help="期望出口国家代码")
     p_gen.add_argument("--workers", type=int, default=10)
     p_gen.add_argument("--timeout", type=float, default=25.0)
