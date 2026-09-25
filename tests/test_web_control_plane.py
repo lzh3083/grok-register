@@ -9,6 +9,22 @@ except ImportError:
     TestClient = None
 
 
+class _NullLogStore:
+    """测试用的空日志存储：吞掉写入，不落盘。"""
+
+    def write(self, _line):
+        return None
+
+    def flush(self):
+        return None
+
+    def read_recent(self, limit=2000):
+        return []
+
+    def prune(self):
+        return 0
+
+
 @unittest.skipIf(TestClient is None, "web dependencies not installed")
 class WebControlPlaneTests(unittest.TestCase):
     @classmethod
@@ -42,6 +58,11 @@ class WebControlPlaneTests(unittest.TestCase):
         with server._log_lock:
             server._logs.clear()
             server._log_seq = 0
+        # 隔离日志落盘：_append_log 现在会写磁盘，若不隔离，本文件里
+        # 批量写入的测试数据会污染真实 logs/console-*.log。
+        cls_server = self.server
+        cls_server._log_store = _NullLogStore()
+        self.addCleanup(setattr, cls_server, "_log_store", None)
         try:
             import proxy_pool
             proxy_pool.reset_manager()

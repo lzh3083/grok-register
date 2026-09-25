@@ -38,3 +38,6 @@ mooproxy_nodes.txt
 # 批次流量计量落盘（含运行时用量数据）
 logs/traffic.json
 logs/traffic_history.json
+
+# 控制台日志落盘（含账号邮箱等运行信息）
+logs/console-*.log

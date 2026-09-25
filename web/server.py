@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import datetime
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -50,6 +51,62 @@ _job_state = {
 _log_lock = threading.Lock()
 _log_seq = 0
 _logs = collections.deque(maxlen=LOG_LIMIT)
+# 日志同时落盘，重启后仍可回看（原先只在内存，重启即丢）。
+_log_store = None
+
+
+def _console_log_dir() -> Path:
+    """日志目录。
+
+    默认项目根下的 logs/（与流量计量文件同目录）。允许用环境变量覆盖 ——
+    不走 config.json 是因为 validate_config_structure 会拒绝未知键，新增
+    配置项必须同步改面板表单，对「日志留久一点」这种诉求过重。
+    """
+    value = str(os.environ.get("GROK_BATCH_CONSOLE_LOG_DIR") or "").strip()
+    if not value:
+        return ROOT / "logs"
+    base = Path(value).expanduser()
+    return base if base.is_absolute() else (ROOT / base).resolve()
+
+
+def _console_log_retention() -> int:
+    try:
+        return max(1, int(os.environ.get("GROK_BATCH_CONSOLE_LOG_DAYS") or 14))
+    except Exception:
+        return 14
+
+
+def _get_log_store():
+    global _log_store
+    if _log_store is None:
+        try:
+            import console_log_store
+            _log_store = console_log_store.ConsoleLogStore(
+                _console_log_dir(), retention_days=_console_log_retention(),
+            )
+            try:
+                _log_store.prune()
+            except Exception:
+                pass
+        except Exception:
+            _log_store = False  # 明确标记不可用，避免反复重试
+    return _log_store or None
+
+
+def _restore_logs_from_disk() -> None:
+    """启动时把历史日志回填进内存队列，刷新页面即可看到。"""
+    global _log_seq
+    store = _get_log_store()
+    if store is None:
+        return
+    try:
+        lines = store.read_recent(limit=LOG_LIMIT)
+    except Exception:
+        return
+    with _log_lock:
+        for line in lines:
+            _log_seq += 1
+            _logs.append({"seq": _log_seq, "line": line})
 
 
 def _append_log(message: str) -> None:
@@ -58,6 +115,12 @@ def _append_log(message: str) -> None:
     with _log_lock:
         _log_seq += 1
         _logs.append({"seq": _log_seq, "line": line})
+    store = _get_log_store()
+    if store is not None:
+        try:
+            store.write(line)
+        except Exception:
+            pass
 
 
 def _state_snapshot() -> dict[str, Any]:
@@ -503,12 +566,35 @@ def status():
     return {"ok": True, **_state_snapshot()}
 
 
+@app.on_event("startup")
+def _on_startup() -> None:
+    """启动时回填历史日志，使面板刷新后仍能看到上次运行的记录。"""
+    _restore_logs_from_disk()
+
+
 @app.get("/api/logs")
 def logs(after: int = Query(default=0, ge=0)):
     with _log_lock:
         entries = [dict(item) for item in _logs if int(item["seq"]) > int(after)]
         latest = int(_log_seq)
     return {"ok": True, "latest": latest, "entries": entries}
+
+
+@app.get("/api/logs/export")
+def logs_export():
+    """把持久化的控制台日志作为附件下载，便于离线排查。"""
+    store = _get_log_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="日志持久化不可用")
+    try:
+        lines = store.read_recent(limit=0)  # 0 = 不截断
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="读取日志失败: %s" % exc)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return JSONResponse(
+        {"ok": True, "count": len(lines), "generated_at": stamp, "lines": lines},
+        headers={"Content-Disposition": 'attachment; filename="grok-console-%s.log"' % stamp},
+    )
 
 
 @app.post("/api/start")
