@@ -440,6 +440,54 @@ def _fill_input(page: Any, selector: str, value: str, label: str, log: LogFn) ->
     return _fill(page, selector, value, log, label)
 
 
+# Chromium 自带的网络错误页特征。这种页面是**浏览器**渲染的，不是站点返回
+# 的 HTML —— 出现它就说明这一跳网络坏了，而不是账号或授权有问题。
+#
+# 关键教训：授权循环原来只认认证类错误（密码错、Cloudflare 拦截），碰到
+# 网络错误页会当成普通页面继续找按钮，静默空转到 300 秒超时；而最终报的
+# "browser confirm timeout phase=consent login_attempts=0" 完全不指向真正
+# 原因。实测踩过：住宅节点失效后网关拿明文 HTTP 回 TLS 握手，页面停在
+# ERR_SSL_PROTOCOL_ERROR，白等 5 分钟才换节点。
+_NETWORK_ERROR_CODES = (
+    "err_ssl_protocol_error", "err_tunnel_connection_failed",
+    "err_proxy_connection_failed", "err_socks_connection_failed",
+    "err_connection_timed_out", "err_connection_reset",
+    "err_connection_closed", "err_connection_refused",
+    "err_connection_failed", "err_name_not_resolved",
+    "err_address_unreachable", "err_internet_disconnected",
+    "err_network_changed", "err_empty_response", "err_timed_out",
+    "err_http2_protocol_error", "err_quic_protocol_error",
+)
+_NETWORK_ERROR_PHRASES = (
+    "this site can't be reached", "this site can’t be reached",
+    "this site can't provide a secure connection",
+    "this site can’t provide a secure connection",
+    "无法访问此网站", "您的连接不是私密连接",
+)
+
+
+def _detect_network_error_page(text: str, url: str = "") -> Optional[str]:
+    """识别 Chromium 网络错误页，返回错误码；正常页面返回 None。"""
+    source = text or ""
+    lower = source.lower()
+    resolved_url = (url or "").lower()
+    if "chrome-error://" in resolved_url:
+        # 附上 "connect error" 是为了让 classify_proxy_network_error 判成
+        # 传输问题（光 "chrome-error page" 会被判成应用层错误，上层就不会
+        # 换节点重试了）。
+        return "chrome-error page (network connect error)"
+    for code in _NETWORK_ERROR_CODES:
+        if code in lower:
+            # 同时附上「下划线换成空格」的写法，好让
+            # classify_proxy_network_error 里的 "timed out" /
+            # "connection refused" 这类自然语言规则也能命中。
+            return "%s (%s)" % (code.upper(), code.replace("_", " "))
+    for phrase in _NETWORK_ERROR_PHRASES:
+        if phrase in lower:
+            return phrase
+    return None
+
+
 def _detect_auth_error(text: str, url: str = "") -> Optional[str]:
     source = text or ""
     lower = source.lower()
@@ -513,6 +561,12 @@ def approve_device_code(
             snippet = _norm(text)[:160]
             if snippet:
                 logger("visible: %s" % snippet)
+        # 先认网络错误页：它是「这一跳网络坏了」，必须立刻失败好让上层换节点，
+        # 绝不能当成普通页面继续找按钮（否则静默空转到超时）。
+        network_error = _detect_network_error_page(text, url)
+        if network_error:
+            logger("network error page: %s" % network_error)
+            raise BrowserConfirmError("auth failed: network error page: %s" % network_error)
         auth_error = _detect_auth_error(text, url)
         if auth_error:
             shot = None
