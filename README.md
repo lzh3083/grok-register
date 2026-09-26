@@ -55,22 +55,22 @@ Grok Register 是一个面向自动化流程研究、测试环境验证和个人
 
 <div align="center">
 
-<a href="https://www.ipwo.net/?ref=githubgrokregister">
-  <img alt="IPWO住宅代理" src="./assets/ipwo-banner.png" />
+<a href="https://m.novproxy.com/invite/xbw7eknur">
+  <img alt="NovProxy住宅代理" src="./assets/novproxy-banner.png" />
 </a>
 
 </div>
 
-<p><sub>需要稳定的住宅 IP？试试 <a href="https://www.ipwo.net/?ref=githubgrokregister">IPWO</a>住宅代理。</sub></p>
+<p><sub>需要稳定的住宅 IP？试试 <a href="https://m.novproxy.com/invite/xbw7eknur">NovProxy</a> 住宅代理。</sub></p>
 
 <p><sub>
-覆盖 195+ 国家和地区<br>
-真实住宅 IP 资源<br>
-灵活的 IP 轮换<br>
+高纯净住宅 IP，成功率 99%<br>
+全球覆盖，1 亿+ IP 资源<br>
+流量永不过期，按需使用<br>
 支持 HTTP / HTTPS / SOCKS5
 </sub></p>
 
-<p><sub>适用于自动化注册、账号管理、数据采集及跨境业务场景，可与浏览器自动化工具和代理池灵活搭配。免费试用，折扣码：<strong><code>0205</code></strong></sub></p>
+<p><sub>适用于自动化注册、账号管理、数据采集及跨境业务场景，可与浏览器自动化工具和代理池灵活搭配。免费试用，折扣码：<strong><code>xbw7eknur</code></strong></sub></p>
 
 <p><sub>广告合作请联系我：2309501984</sub></p>
 

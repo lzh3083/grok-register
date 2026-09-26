@@ -55,22 +55,22 @@ Grok Register is a Python toolkit for automation workflow research, test-environ
 
 <div align="center">
 
-<a href="https://www.ipwo.net/?ref=githubgrokregister">
-  <img alt="IPWO Residential Proxies" src="./assets/ipwo-banner.png" />
+<a href="https://m.novproxy.com/invite/xbw7eknur">
+  <img alt="NovProxy Residential Proxies" src="./assets/novproxy-banner.png" />
 </a>
 
 </div>
 
-<p><sub>Need stable residential IPs? Try <a href="https://www.ipwo.net/?ref=githubgrokregister">IPWO</a> residential proxies.</sub></p>
+<p><sub>Need stable residential IPs? Try <a href="https://m.novproxy.com/invite/xbw7eknur">NovProxy</a> residential proxies.</sub></p>
 
 <p><sub>
-Coverage across 195+ countries and regions<br>
-Real residential IP resources<br>
-Flexible IP rotation<br>
+High-purity residential IPs with a 99% success rate<br>
+Global coverage with 100M+ IP resources<br>
+Traffic that never expires<br>
 HTTP / HTTPS / SOCKS5 support
 </sub></p>
 
-<p><sub>Suitable for automation registration, account management, data collection, and cross-border business scenarios, with flexible integration into browser automation tools and proxy pools. Free trial available. Discount code: <strong><code>0205</code></strong></sub></p>
+<p><sub>Suitable for automation registration, account management, data collection, and cross-border business scenarios, with flexible integration into browser automation tools and proxy pools. Free trial available. Discount code: <strong><code>xbw7eknur</code></strong></sub></p>
 
 <p><sub>For advertising partnerships, contact me at: 2309501984</sub></p>
 
