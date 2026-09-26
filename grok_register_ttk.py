@@ -292,7 +292,7 @@ for _name in ['_pick_list_payload', 'cloudflare_apply_auth_params', 'cloudflare_
     _proxy = _make_compat_proxy(_mail_service, _name, _bind_mail_service)
     _MAIL_COMPAT_PROXIES[_name] = _proxy
     globals()[_name] = _proxy
-for _name in ['generate_random_birthdate', 'response_preview', 'is_cloudflare_block_response', 'set_birth_date', 'set_tos_accepted', 'encode_grpc_nsfw_settings', 'update_nsfw_settings', 'enable_nsfw_for_token', 'stop_browser_proxy_bridge', 'start_browser', 'stop_browser', 'restart_browser', 'cleanup_runtime_memory', 'refresh_active_page', 'click_email_signup_button', 'open_signup_page', 'has_profile_form', 'fill_email_and_submit', 'fill_code_and_submit', 'getTurnstileToken', 'build_profile', 'fill_profile_and_submit', 'wait_for_sso_cookie']:
+for _name in ['generate_random_birthdate', 'response_preview', 'is_cloudflare_block_response', 'set_birth_date', 'set_tos_accepted', 'encode_grpc_nsfw_settings', 'update_nsfw_settings', 'enable_nsfw_for_token', 'stop_browser_proxy_bridge', 'start_browser', 'stop_browser', 'restart_browser', 'cleanup_runtime_memory', 'refresh_active_page', 'click_email_signup_button', 'open_signup_page', 'has_profile_form', 'fill_email_and_submit', 'fill_code_and_submit', 'getTurnstileToken', 'build_profile', 'fill_profile_and_submit', 'wait_for_sso_cookie', 'check_imagine_capability']:
     globals()[_name] = _make_compat_proxy(_registration_browser, _name, _bind_registration_browser)
 
 
@@ -916,6 +916,11 @@ def run_registration_common(count, log_callback, cancel_callback, accounts_outpu
             retry_exception=AccountRetryNeeded,
             internal_stage_markers=True,
             screen_sso=lambda sso, email: _screen_registered_sso(sso, email, log_callback),
+            check_imagine=(
+                (lambda: check_imagine_capability(
+                    log_callback=log_callback, cancel_callback=cancel_callback,
+                )) if config.get("check_imagine_capability", False) else None
+            ),
         )
         return run_batch(
             count=effective_count,

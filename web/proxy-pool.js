@@ -35,6 +35,7 @@
     ['novproxy_num','number',{min:1,max:500}],
     ['quality_auto_probe','checkbox'],
     ['quality_soft_threshold','number',{min:1,max:5000}],
+    ['check_imagine_capability','checkbox'],
     ['browser_path','text','full'],
     ['cloudflare_fixed_address','text','full'],
     ['cloudflare_fixed_jwt','text','full'],
@@ -46,7 +47,7 @@
     cpaStatus:'CPA 凭据', cpaRefresh:'刷新', cpaEmail:'邮箱', cpaExpired:'有效期至', cpaFile:'文件',
     cpaNone:'暂无已导出的凭据', cpaBfs:'BFS 标记', cpaBfsYes:'已标记', cpaSyncOn:'远程同步', cpaSyncOff:'未启用远程同步',
     cpaSyncOk:'目标可达', cpaSyncFail:'目标不可达', cpaFailed:'导出失败', cpaCount:'个凭据',
-    qualityScan:'降智质量扫描', qualityScanning:'扫描中...', cpaQuality:'降智检测',
+    qualityScan:'降智扫描(仅新账号)', qualityFullScan:'降智全量重扫', qualityScanning:'扫描中...', cpaQuality:'降智检测',
     trafficTitle:'代理流量计量', trafficRefresh:'刷新', trafficStarted:'开始时间',
     trafficUp:'上行', trafficDown:'下行', trafficTotal:'合计', trafficAccounts:'成功账号',
     trafficNone:'暂无流量记录', trafficAvgBatch:'历史批次均值', trafficAvgAccount:'每账号均值',
@@ -68,7 +69,7 @@
     cpaStatus:'CPA credentials', cpaRefresh:'Refresh', cpaEmail:'Email', cpaExpired:'Expires', cpaFile:'File',
     cpaNone:'No exported credentials yet', cpaBfs:'BFS flag', cpaBfsYes:'flagged', cpaSyncOn:'Remote sync', cpaSyncOff:'Remote sync disabled',
     cpaSyncOk:'target reachable', cpaSyncFail:'target unreachable', cpaFailed:'Export failed', cpaCount:'files',
-    qualityScan:'Probe Quality', qualityScanning:'Probing...', cpaQuality:'Quality',
+    qualityScan:'Probe New Only', qualityFullScan:'Probe All (Full)', qualityScanning:'Probing...', cpaQuality:'Quality',
     trafficTitle:'Proxy Traffic Meter', trafficRefresh:'Refresh', trafficStarted:'Started',
     trafficUp:'Up', trafficDown:'Down', trafficTotal:'Total', trafficAccounts:'Accounts',
     trafficNone:'No traffic recorded', trafficAvgBatch:'Avg per batch', trafficAvgAccount:'Avg per account',
@@ -119,6 +120,7 @@
     novproxy_num:['NovProxy 提取数量 (num=N)','建议与注册数量匹配：一账号独占一个出口 IP，避免同 IP 关联。'],
     quality_auto_probe:['注册后自动降智测试','注册并导出 CPA 后自动发起流式质量探测，验证账号推理健康度。'],
     quality_soft_threshold:['降智测试可疑阈值','低于该推理 token 数量（默认 50）标记为可疑；0 标记为降智。'],
+    check_imagine_capability:['注册时实测生图能力','在注册会话里打开 grok.com/imagine 并提交一次生成。很费住宅代理流量，默认关闭。'],
     browser_path:['Chromium 路径','留空自动探测（读 GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH 环境变量及常见安装位置）。容器内浏览器装在非标准目录时必须显式指定。'],
     cloudflare_fixed_address:['固定邮箱地址','留空则每个账号自动新建地址。填写后复用该地址，适用于实例已关闭建址的场景。'],
     cloudflare_fixed_jwt:['固定邮箱 JWT','与固定邮箱地址配套的地址级凭证（网页链接里 ?jwt= 后面那串）。'],
@@ -157,6 +159,7 @@
     novproxy_num:['NovProxy batch size (num=N)','Keep aligned with register count: one dedicated residential IP per account.'],
     quality_auto_probe:['Auto quality probe','Automatically probe reasoning tokens after account registration and CPA export.'],
     quality_soft_threshold:['Soft reasoning threshold','Reasoning tokens below this count (default 50) marked as soft/suspicious.'],
+    check_imagine_capability:['Probe Imagine at signup','Open grok.com/imagine and submit one generation during registration. Heavy on residential proxy traffic; off by default.'],
     browser_path:['Chromium path','Leave empty to auto-detect (via GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH and common install locations). Required when the browser lives outside standard paths, e.g. inside a container.'],
     cloudflare_fixed_address:['Fixed mail address','Leave empty to create a fresh address per account. Set it to reuse one address, e.g. when address creation is disabled on the instance.'],
     cloudflare_fixed_jwt:['Fixed mail JWT','Address-level credential paired with the fixed address (the ?jwt= value in the web UI URL).'],
@@ -227,6 +230,7 @@
         <strong data-i18n="cpaStatus">${t('cpaStatus')}</strong>
         <div class="proxy-status-actions">
           <button type="button" id="qualityScanBtn" class="mini-btn"><span data-i18n="qualityScan">${t('qualityScan')}</span></button>
+          <button type="button" id="qualityFullScanBtn" class="mini-btn"><span data-i18n="qualityFullScan">${t('qualityFullScan')}</span></button>
           <button type="button" id="cpaRefreshBtn" class="mini-btn"><span data-i18n="cpaRefresh">${t('cpaRefresh')}</span></button>
         </div>
       </div>
@@ -519,10 +523,12 @@
   }
   const qualityBtn = document.getElementById('qualityScanBtn');
   if (qualityBtn) {
+    // 默认只测新账号：全量重扫几十个账号要将近一小时，而每次注册只新增
+    // 几个，重复扫旧的纯属浪费时间。
     qualityBtn.onclick = async () => {
       qualityBtn.disabled = true;
       try {
-        const r = await fetch('./api/quality/scan', {method: 'POST'});
+        const r = await fetch('./api/quality/scan?only_new=true', {method: 'POST'});
         const d = await r.json();
         if (!r.ok) {
           setNotice(d.detail || '启动失败', true);
@@ -534,6 +540,27 @@
         setNotice(e.message, true);
       } finally {
         setTimeout(() => { qualityBtn.disabled = false; }, 3000);
+      }
+    };
+  }
+  const qualityFullBtn = document.getElementById('qualityFullScanBtn');
+  if (qualityFullBtn) {
+    // 全量重扫：复核所有旧账号（降智会随时间变化）
+    qualityFullBtn.onclick = async () => {
+      qualityFullBtn.disabled = true;
+      try {
+        const r = await fetch('./api/quality/scan', {method: 'POST'});
+        const d = await r.json();
+        if (!r.ok) {
+          setNotice(d.detail || '启动失败', true);
+        } else {
+          setNotice(d.message || '全量降智扫描已在后台启动');
+          refreshCpaStatus();
+        }
+      } catch (e) {
+        setNotice(e.message, true);
+      } finally {
+        setTimeout(() => { qualityFullBtn.disabled = false; }, 3000);
       }
     };
   }

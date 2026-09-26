@@ -55,7 +55,14 @@ def _run_pre_submit_js(script, *args):
         if _is_pre_submit_js_transient(exc):
             raise AccountRetryNeeded(f"提交前浏览器 JS 暂时失败: {exc}") from exc
         raise
-_OWN_NAMES = {'is_cloudflare_block_response', 'response_preview', 'start_browser', 'enable_nsfw_for_token', 'stop_browser_proxy_bridge', 'set_tos_accepted', 'fill_email_and_submit', 'getTurnstileToken', 'set_birth_date', 'generate_random_birthdate', 'fill_profile_and_submit', 'click_email_signup_button', 'wait_for_sso_cookie', 'fill_code_and_submit', 'build_profile', 'cleanup_runtime_memory', 'open_signup_page', 'stop_browser', 'encode_grpc_nsfw_settings', 'restart_browser', 'has_profile_form', 'update_nsfw_settings', 'refresh_active_page'}
+_OWN_NAMES = {'is_cloudflare_block_response', 'response_preview', 'start_browser', 'enable_nsfw_for_token', 'stop_browser_proxy_bridge', 'set_tos_accepted', 'fill_email_and_submit', 'getTurnstileToken', 'set_birth_date', 'generate_random_birthdate', 'fill_profile_and_submit', 'click_email_signup_button', 'wait_for_sso_cookie', 'fill_code_and_submit', 'build_profile', 'cleanup_runtime_memory', 'open_signup_page', 'stop_browser', 'encode_grpc_nsfw_settings', 'restart_browser', 'has_profile_form', 'update_nsfw_settings', 'refresh_active_page', 'check_imagine_capability'}
+# 注意：grok_register_ttk 会用 _make_compat_proxy 把本模块的同名函数包装成
+# 转发代理，再经 bind_runtime 把整个命名空间注回这里。凡是会被转发的名字
+# 都必须列在 _OWN_NAMES 里，否则 bind_runtime 会用「指向本模块的代理」覆盖
+# 掉真函数，代理再转发回自己 —— 无限递归。
+# 实测踩过：check_imagine_capability 漏登记，调用时报
+# "maximum recursion depth exceeded while calling a Python object"。
+# tests/test_module_compatibility.py 里有测试守着这条。
 
 
 def bind_runtime(namespace):
@@ -225,6 +232,153 @@ def enable_nsfw_for_token(token, cf_clearance="", log_callback=None):
             return True, "成功开启 NSFW"
     except Exception as e:
         return False, f"异常: {str(e)}"
+
+def check_imagine_capability(log_callback=None, cancel_callback=None):
+    """用当前已登录的浏览器会话实测 Grok Imagine 生图能力。
+
+    为什么必须在注册流程里做：保存下来的 sso cookie 之后会被服务端轮换。
+    实测拿它去调 grok.com 的 gRPC 接口，HTTP 状态码仍是 200，但
+    grpc-status=16 + "Bad credentials [WKE=unauthenticated:bad-credentials]"
+    —— 只看 HTTP 状态码会被骗。所以只有注册当时浏览器里的会话有效。
+
+    判定方式是读 Imagine 页面本身，而不是自己拼 REST 请求：直接 POST
+    /rest/app-chat/conversations/new 会被 xAI 以 403 code:7
+    "This page is out of date. Reload to continue." 拒掉（缺少页面上下文
+    令牌），那个 403 说明不了额度，只能说明请求构造得不对。
+
+    返回 (ok, detail)：
+      True  → 生图界面可用（没有额度/订阅拦截）
+      False → 明确提示需要 credits 或订阅
+      None  → 探测本身没做成（页面没就绪等），不代表账号能力
+    """
+    global page
+    if page is None:
+        return None, "浏览器未就绪"
+    raise_if_cancelled(cancel_callback)
+    try:
+        page.get("https://grok.com/imagine", timeout=45)
+        page.wait.doc_loaded()
+    except Exception as exc:
+        return None, f"打开 Imagine 页面失败: {exc}"
+    sleep_with_cancel(7, cancel_callback)
+
+    try:
+        raw = page.run_js(r"""
+const body = document.body ? document.body.innerText : '';
+return JSON.stringify({
+  url: location.href,
+  text: body.slice(0, 4000),
+  hasTextarea: !!document.querySelector('textarea, [contenteditable="true"]'),
+  hasUpgradeCta: /out of credits|need a grok subscription|upgrade to|subscribe to|spending limit/i.test(body),
+});
+""")
+        data = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception as exc:
+        return None, f"读取 Imagine 页面失败: {exc}"
+
+    text = str(data.get("text") or "")
+    lowered = text.lower()
+    if data.get("hasUpgradeCta"):
+        return False, "无生图额度：页面提示需要 credits 或 Grok 订阅"
+    if "sign in" in lowered and "sign up" in lowered and not data.get("hasTextarea"):
+        return None, "会话未被识别为已登录，未能判定"
+    if data.get("hasTextarea"):
+        # 有输入框只是界面层面，说明不了额度。再实际提交一次生成请求，
+        # 看额度是否真的放行 —— 拦截通常要到点生成时才弹出来。
+        gen_ok, gen_detail = _try_generate_image(cancel_callback)
+        if gen_ok is not None:
+            return gen_ok, gen_detail
+        return True, "Imagine 界面可用（有生图输入框，未见额度拦截）；实际生成未判定: %s" % gen_detail
+    return None, f"未判定（url={data.get('url')}）：{text[:160]}"
+
+
+def _try_generate_image(cancel_callback=None):
+    """在已打开的 Imagine 页面上真的提交一次生图，看额度是否放行。
+
+    返回 (True, ...) 生成了图片 / (False, ...) 被额度拦住 / (None, ...) 没判定出来。
+    """
+    global page
+    if page is None:
+        return None, "浏览器未就绪"
+    before = set()
+    try:
+        state = page.run_js(r"""
+const imgs = Array.from(document.querySelectorAll('img'))
+  .map(i => i.currentSrc || i.src || '')
+  .filter(Boolean);
+return JSON.stringify({imgs: imgs});
+""")
+        before = set(json.loads(state).get("imgs") or [])
+    except Exception:
+        pass
+
+    box = None
+    box_loc = ""
+    for loc in ("tag:textarea", "@contenteditable=true", "tag:input@@type=text"):
+        try:
+            box = page.ele(loc, timeout=3)
+        except Exception:
+            box = None
+        if box:
+            box_loc = loc
+            break
+    if box is None:
+        return None, "找不到生图输入框"
+
+    try:
+        box.clear()
+        box.input("a red apple on a white background")
+        sleep_with_cancel(1, cancel_callback)
+        # contenteditable 上敲 "\n" 并不会触发发送，得点发送按钮或真按回车。
+        sent = ""
+        for loc in ("tag:button@@aria-label*=end", "tag:button@@aria-label*=Send",
+                    "tag:button@@type=submit", "tag:button@@text()=Send"):
+            try:
+                btn = page.ele(loc, timeout=2)
+            except Exception:
+                btn = None
+            if btn:
+                btn.click()
+                sent = "按钮 %s" % loc
+                break
+        if not sent:
+            try:
+                from DrissionPage.common import Keys
+                box.input(Keys.ENTER)
+                sent = "回车键"
+            except Exception as exc:
+                return None, f"没找到发送按钮且回车失败: {exc}"
+    except Exception as exc:
+        return None, f"提交生图请求失败: {exc}"
+
+    blocked_re = "out of credits|need a grok subscription|upgrade to|spending limit|not available in your"
+    last_tail = ""
+    for _ in range(50):
+        sleep_with_cancel(3, cancel_callback)
+        raise_if_cancelled(cancel_callback)
+        try:
+            state = page.run_js(r"""
+const body = document.body ? document.body.innerText : '';
+const imgs = Array.from(document.querySelectorAll('img'))
+  .map(i => i.currentSrc || i.src || '')
+  .filter(Boolean);
+return JSON.stringify({
+  imgs: imgs,
+  blocked: /%s/i.test(body),
+  tail: body.slice(-500),
+});
+""" % blocked_re)
+            st = json.loads(state) if isinstance(state, str) else (state or {})
+        except Exception:
+            continue
+        if st.get("blocked"):
+            return False, "提交后提示需要 credits 或订阅"
+        last_tail = str(st.get("tail") or last_tail)
+        new_imgs = [u for u in (st.get("imgs") or []) if u not in before]
+        if new_imgs:
+            return True, "已成功生成图片（页面出现新的生成结果）"
+    return None, "提交后 150 秒内没看到新图片（提交方式=%s，输入框=%s，提交前图片数=%d）；页面尾部: %s" % (
+        sent, box_loc, len(before), last_tail.replace("\n", " ")[:220])
 
 def stop_browser_proxy_bridge():
     global browser_proxy_bridge

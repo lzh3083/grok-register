@@ -98,6 +98,9 @@ class RegistrationOperations:
     internal_stage_markers: bool = False
     screen_sso: Optional[Callable[[str, str], Any]] = None
     preflight_mail: Optional[Callable[[], Any]] = None
+    # 可选：注册会话内实测 Grok Imagine 生图能力。必须在注册流程里做 ——
+    # 保存下来的 sso cookie 之后会被服务端轮换，事后测不出来。
+    check_imagine: Optional[Callable[[], Any]] = None
 
 
 @dataclass
@@ -230,6 +233,19 @@ def register_one_account(callbacks, ops, enable_nsfw=True, max_mail_retry=3):
         except Exception as exc:
             callbacks.log(f"[!] NSFW 开启异常，继续保存账号: {exc}")
             proxy_feedback_kind, proxy_feedback_error = _stronger_feedback(proxy_feedback_kind, proxy_feedback_error, exc)
+    imagine = getattr(ops, "check_imagine", None)
+    if callable(imagine):
+        callbacks.log("[*] 7. 实测生图能力 (Grok Imagine)")
+        try:
+            imagine_ok, imagine_msg = imagine()
+            if imagine_ok is True:
+                callbacks.log(f"[+] 生图可用: {imagine_msg}")
+            elif imagine_ok is False:
+                callbacks.log(f"[-] 生图不可用: {imagine_msg}")
+            else:
+                callbacks.log(f"[!] 生图能力未能判定，继续保存账号: {imagine_msg}")
+        except Exception as exc:
+            callbacks.log(f"[!] 生图能力探测异常，继续保存账号: {exc}")
     return RegistrationResult(
         ok=True, email=email, password=str(profile.get("password") or ""), sso=sso, profile=profile,
         proxy_feedback_kind=proxy_feedback_kind, proxy_feedback_error=proxy_feedback_error,

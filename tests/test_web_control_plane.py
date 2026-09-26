@@ -385,6 +385,96 @@ class WebControlPlaneTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
 
+    def test_quality_scan_only_new_skips_already_probed(self):
+        """增量扫描只测没有结果的账号。
+
+        注册后自动触发的是增量扫描：全量重扫几十个账号要将近一小时，
+        而一次注册通常只新增几个，重复扫旧账号纯属浪费时间。
+        """
+        import json
+        import tempfile
+        from pathlib import Path
+
+        probed = []
+        records = [
+            {"email": "old@example.com", "access_token": "t1"},
+            {"email": "new@example.com", "access_token": "t2"},
+        ]
+        saved = {"results": {"old@example.com": {"email": "old@example.com", "verdict": "healthy"}}}
+
+        def fake_probe(record, **kwargs):
+            probed.append(record["email"])
+            return {"email": record["email"], "verdict": "healthy", "reasoning_tokens": 5000}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "quality_results.json").write_text(json.dumps(saved), encoding="utf-8")
+            with patch("quality_probe.load_credentials", return_value=records), \
+                 patch("quality_probe.probe_account", side_effect=fake_probe), \
+                 patch.object(self.server, "_load_config_if_idle",
+                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50}):
+                resp = self.client.post("/api/quality/scan?only_new=true")
+                self.assertEqual(resp.status_code, 200)
+                for _ in range(60):
+                    if not self.server._quality_state["running"]:
+                        break
+                    time.sleep(0.05)
+
+        self.assertEqual(probed, ["new@example.com"], "已测过的账号不应被重复探测")
+
+    def test_quality_scan_only_new_skips_entirely_when_nothing_new(self):
+        """没有新账号时直接跳过，不启动空扫描。"""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        probed = []
+        records = [{"email": "old@example.com", "access_token": "t1"}]
+        saved = {"results": {"old@example.com": {"email": "old@example.com", "verdict": "healthy"}}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "quality_results.json").write_text(json.dumps(saved), encoding="utf-8")
+            with patch("quality_probe.load_credentials", return_value=records), \
+                 patch("quality_probe.probe_account", side_effect=lambda *a, **k: probed.append(1)), \
+                 patch.object(self.server, "_load_config_if_idle",
+                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50}):
+                resp = self.client.post("/api/quality/scan?only_new=true")
+                self.assertEqual(resp.status_code, 200)
+                for _ in range(60):
+                    if not self.server._quality_state["running"]:
+                        break
+                    time.sleep(0.05)
+
+        self.assertEqual(probed, [], "没有新账号时不应发起任何探测")
+
+    def test_quality_scan_default_is_full(self):
+        """不带参数时仍是全量（手动点全量重扫的语义）。"""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        probed = []
+        records = [{"email": "old@example.com", "access_token": "t1"}]
+        saved = {"results": {"old@example.com": {"email": "old@example.com", "verdict": "healthy"}}}
+
+        def fake_probe(record, **kwargs):
+            probed.append(record["email"])
+            return {"email": record["email"], "verdict": "healthy", "reasoning_tokens": 5000}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "quality_results.json").write_text(json.dumps(saved), encoding="utf-8")
+            with patch("quality_probe.load_credentials", return_value=records), \
+                 patch("quality_probe.probe_account", side_effect=fake_probe), \
+                 patch.object(self.server, "_load_config_if_idle",
+                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50}):
+                resp = self.client.post("/api/quality/scan")
+                self.assertEqual(resp.status_code, 200)
+                for _ in range(60):
+                    if not self.server._quality_state["running"]:
+                        break
+                    time.sleep(0.05)
+
+        self.assertEqual(probed, ["old@example.com"], "全量模式应重扫已有结果的账号")
+
     def test_proxy_pool_novproxy_defaults(self):
         with patch("novproxy.generate", return_value=[{"node": "1.2.3.4:7000", "exit_ip": "1.2.3.4"}]) as mock_gen, \
              patch("novproxy.write_nodes") as mock_write, \

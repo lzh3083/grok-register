@@ -126,6 +126,10 @@ DEFAULT_CONFIG = {
     "quality_auto_probe": False,
     # 降智测试可疑阈值（低于此推理 token 数量视为可疑）。
     "quality_soft_threshold": 50,
+    # 注册会话内是否实测 Grok Imagine 生图能力。默认关闭：这个探测要真的
+    # 打开 grok.com/imagine 并提交一次生成，很费住宅代理流量，而结论基本
+    # 是固定的（免费账号网页端界面可用、API 端一律 403 需要订阅）。
+    "check_imagine_capability": False,
     # Chromium 可执行文件路径。留空则按环境变量与常见安装位置自动探测；
     # 容器/服务器上浏览器常装在非标准目录，此时需显式指定。
     "browser_path": "",

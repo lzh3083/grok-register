@@ -29,6 +29,38 @@ class ModuleCompatibilityTests(unittest.TestCase):
         self.assertIs(browser_confirm.close_standalone, browser_session.close_standalone)
         self.assertIs(browser_confirm.normalize_cookies, browser_session.normalize_cookies)
 
+    def test_registration_browser_own_names_cover_all_forwarded(self):
+        """每个被转发到 registration_browser 的名字都必须登记在 _OWN_NAMES。
+
+        漏登记的后果是静默自递归而不是报错：grok_register_ttk 用
+        _make_compat_proxy 把本模块函数包成转发代理，_bind_registration_browser
+        再经 bind_runtime 把整个命名空间注回 registration_browser，于是本模块
+        里的同名真函数被「指回本模块的代理」覆盖，代理转发时又取到代理自己。
+        实测踩过：check_imagine_capability 漏登记，调用时报
+        "maximum recursion depth exceeded while calling a Python object"。
+        """
+        import ast
+        import inspect
+
+        src = inspect.getsource(app)
+        forwarded = set()
+        for node in ast.walk(ast.parse(src)):
+            if (isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+                    and node.target.id == "_name"):
+                segment = ast.get_source_segment(src, node) or ""
+                if "_make_compat_proxy(_registration_browser" in segment:
+                    forwarded = {e.value for e in node.iter.elts}
+        self.assertTrue(forwarded, "没能从 grok_register_ttk 解析出转发名单，测试本身失效了")
+        missing = sorted(forwarded - registration_browser._OWN_NAMES)
+        self.assertEqual(missing, [], "这些名字漏登记进 _OWN_NAMES，会导致自递归: %s" % missing)
+
+    def test_check_imagine_capability_does_not_self_recurse(self):
+        """page 未就绪时应直接返回，而不是递归到爆栈。"""
+        with patch.object(registration_browser, "page", None):
+            ok, detail = app.check_imagine_capability()
+        self.assertIsNone(ok)
+        self.assertIn("浏览器未就绪", detail)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -206,8 +206,10 @@ def _run_job(count: int, controller: Any, accounts_file: str) -> None:
         _update_progress(batch)
         if bool(engine.config.get("quality_auto_probe", False)) and int(batch.success_count) > 0:
             try:
-                _append_log("[quality] 注册完成，自动触发降智检测扫描...")
-                quality_scan()
+                _append_log("[quality] 注册完成，自动触发降智检测扫描（只测本批新增账号）...")
+                # only_new=True：不重扫之前已经测过的账号。全量重扫一次要
+                # ~55 分钟，而每次注册只新增几个，重复扫描纯属浪费。
+                quality_scan(only_new=True)
             except Exception as q_exc:
                 _append_log("[quality] 自动触发降智检测跳过: %s" % q_exc)
     except Exception as exc:
@@ -702,8 +704,13 @@ def quality_status():
 
 
 @app.post("/api/quality/scan")
-def quality_scan():
-    """触发全量 CPA 凭据账号的降智检测后台扫描。"""
+def quality_scan(only_new: bool = False):
+    """触发 CPA 凭据账号的降智检测后台扫描。
+
+    only_new=True 时只测「还没有结果」的账号。注册后的自动扫描走这条：
+    全量重扫 38 个账号要 ~55 分钟，而一次注册通常只新增几个，绝大部分
+    时间是白花的。手动在面板上点扫描时默认全量重扫（想复核旧账号）。
+    """
     global _quality_state
     with _quality_lock:
         if _quality_state["running"]:
@@ -726,15 +733,13 @@ def quality_scan():
     def _task():
         import quality_probe as qp
         try:
-            _append_log("[quality] 开始执行全量账号降智质量扫描...")
+            mode = "增量（只测新账号）" if only_new else "全量"
+            _append_log("[quality] 开始执行账号降智质量扫描（%s）..." % mode)
             cfg = _load_config_if_idle()
             auth_dir = Path(str(cfg.get("cpa_auth_dir") or "./cpa_auths")).expanduser()
             if not auth_dir.is_absolute():
                 auth_dir = (Path(engine.__file__).resolve().parent / auth_dir).resolve()
             records = qp.load_credentials(str(auth_dir))
-            with _quality_lock:
-                _quality_state["total"] = len(records)
-            _append_log("[quality] 共发现 %d 个待测凭据" % len(records))
 
             res_file = auth_dir / "quality_results.json"
             saved_map = {}
@@ -743,6 +748,21 @@ def quality_scan():
                     saved_map = json.loads(res_file.read_text(encoding="utf-8")).get("results") or {}
                 except Exception:
                     pass
+
+            if only_new:
+                before = len(records)
+                records = [r for r in records if str(r.get("email") or "") not in saved_map]
+                _append_log(
+                    "[quality] 增量模式: 跳过 %d 个已测账号，本次只测 %d 个新账号"
+                    % (before - len(records), len(records))
+                )
+                if not records:
+                    _append_log("[quality] 没有新增账号需要探测，跳过降智检测（省下约 %d 分钟）" % max(1, int(before * 1.5 // 60)))
+                    return
+
+            with _quality_lock:
+                _quality_state["total"] = len(records)
+            _append_log("[quality] 共发现 %d 个待测凭据" % len(records))
 
             results = []
             soft_thresh = int(cfg.get("quality_soft_threshold") or 50)
