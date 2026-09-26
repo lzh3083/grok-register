@@ -161,6 +161,126 @@ class ProxyPoolV3Tests(unittest.TestCase):
         self.assertEqual(result.success_count, 1)
         self.assertEqual(result.uncertain_count, 0)
 
+    def test_page_open_generic_error_retries_instead_of_killing_batch(self):
+        """开注册页抛「普通异常」也要换节点重试，不能整批中止。
+
+        实测踩过：住宅节点中途死掉，Chromium 停在错误页，抛出的是
+        「未找到「使用邮箱注册」按钮」这种普通 Exception（不是
+        ProxyTransportError）。旧逻辑在 SAFE_NEW_LEASE 阶段对非代理异常
+        直接 raise，结果一个坏节点把整批 20 个账号全拖死。
+        """
+        callbacks = RegistrationCallbacks(log=lambda _: None, cancelled=lambda: False)
+        begins = []
+        state = {"page_calls": 0}
+
+        def page():
+            state["page_calls"] += 1
+            if state["page_calls"] == 1:
+                raise Exception("未找到「使用邮箱注册」按钮")
+
+        ops = self._ops()
+        ops.open_signup_page = page
+        with patch.dict(registration_flow.app_config, {"proxy_mode": "single"}, clear=False), \
+             patch("registration_flow.begin_registration_slot", side_effect=lambda **kw: begins.append(kw)), \
+             patch("registration_flow.end_registration_slot"), \
+             patch("registration_flow.current_proxy_lease", return_value=object()):
+            result = run_batch(1, callbacks, lambda *_: None, ops, enable_nsfw=False, max_slot_retry=2)
+
+        # 第一次失败后换了租约重试，第二次成功
+        self.assertEqual(state["page_calls"], 2)
+        self.assertEqual(len(begins), 2)
+        self.assertEqual(result.success_count, 1)
+        self.assertEqual(result.fail_count, 0)
+
+    def test_page_open_retry_exhaustion_skips_account_not_batch(self):
+        """重试用尽后只跳过该账号，批量任务继续跑完。"""
+        callbacks = RegistrationCallbacks(log=lambda _: None, cancelled=lambda: False)
+        state = {"page_calls": 0}
+
+        def page():
+            state["page_calls"] += 1
+            raise Exception("未找到「使用邮箱注册」按钮")
+
+        ops = self._ops()
+        ops.open_signup_page = page
+        with patch.dict(registration_flow.app_config, {"proxy_mode": "single"}, clear=False), \
+             patch("registration_flow.begin_registration_slot"), \
+             patch("registration_flow.end_registration_slot"), \
+             patch("registration_flow.current_proxy_lease", return_value=object()):
+            result = run_batch(2, callbacks, lambda *_: None, ops, enable_nsfw=False, max_slot_retry=1)
+
+        # 每个账号 1 次首试 + 1 次重试 = 2 次，两个账号共 4 次；全部失败但没抛异常
+        self.assertEqual(state["page_calls"], 4)
+        self.assertEqual(result.fail_count, 2)
+        self.assertEqual(result.processed_count, 2)
+
+    def test_browser_start_failure_still_fails_fast(self):
+        """浏览器启动失败仍按原设计直接抛出（不是代理/页面问题）。"""
+        callbacks = RegistrationCallbacks(log=lambda _: None, cancelled=lambda: False)
+        ops = self._ops()
+        ops.start_browser = lambda: (_ for _ in ()).throw(RuntimeError("start failed"))
+        with patch.dict(registration_flow.app_config, {"proxy_mode": "single"}, clear=False), \
+             patch("registration_flow.begin_registration_slot"), \
+             patch("registration_flow.end_registration_slot"), \
+             patch("registration_flow.current_proxy_lease", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "start failed"):
+                run_batch(1, callbacks, lambda *_: None, ops, enable_nsfw=False)
+
+    def test_page_has_proxy_error_detects_chromium_error_codes(self):
+        """Chromium 错误页把错误码写成 ERR_XXX_YYY，必须能识别出来。
+
+        旧实现只匹配自然语言（如 "tunnel connection failed"），而实际
+        页面文本是 ERR_TUNNEL_CONNECTION_FAILED（下划线），永远匹配不到，
+        于是坏节点被当成普通应用错误处理。
+        """
+        import browser_runtime
+
+        class FakePage:
+            def __init__(self, url, title, body):
+                self.url = url
+                self._title = title
+                self._body = body
+
+            def run_js(self, script):
+                return self._title if "document.title" in script else self._body
+
+        cases = [
+            ("chrome-error://chromewebdata/", "", ""),
+            ("https://accounts.x.ai/sign-up", "", "This site can't be reached ERR_TUNNEL_CONNECTION_FAILED"),
+            ("https://accounts.x.ai/sign-up", "", "ERR_CONNECTION_TIMED_OUT"),
+            ("https://accounts.x.ai/sign-up", "", "ERR_SOCKS_CONNECTION_FAILED"),
+            ("https://accounts.x.ai/sign-up", "", "ERR_PROXY_CONNECTION_FAILED"),
+        ]
+        for url, title, body in cases:
+            with patch.object(browser_runtime, "managed_proxy_active", return_value=True):
+                with self.assertRaises(ProxyTransportError):
+                    browser_runtime.page_has_proxy_error(FakePage(url, title, body))
+
+    def test_page_has_proxy_error_ignores_normal_page(self):
+        import browser_runtime
+
+        class FakePage:
+            url = "https://accounts.x.ai/sign-up?redirect=grok-com"
+
+            def run_js(self, script):
+                return "Create Your Grok Account | Grok" if "document.title" in script else "Sign up with email"
+
+        with patch.object(browser_runtime, "managed_proxy_active", return_value=True):
+            self.assertFalse(browser_runtime.page_has_proxy_error(FakePage()))
+
+    def test_page_has_proxy_error_ignores_cloudflare_block(self):
+        """Cloudflare 拦截页不是网络错误，不能被当成坏节点。"""
+        import browser_runtime
+
+        class FakePage:
+            url = "https://accounts.x.ai/sign-up"
+
+            def run_js(self, script):
+                return "Attention Required! | Cloudflare" if "document.title" in script else "Sorry, you have been blocked"
+
+        with patch.object(browser_runtime, "managed_proxy_active", return_value=True):
+            self.assertFalse(browser_runtime.page_has_proxy_error(FakePage()))
+
 
 if __name__ == "__main__":
     unittest.main()

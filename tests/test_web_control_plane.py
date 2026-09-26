@@ -278,6 +278,35 @@ class WebControlPlaneTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
 
+    def test_job_finalizes_traffic_meter(self):
+        """任务结束后必须归档流量：count_account + finish_batch 都要调到。
+
+        实测踩过：这里把函数名写成 record_account，AttributeError 被外层
+        except 吞掉，流量永远不落盘、面板一直显示 running，本批用量丢失。
+        """
+        cfg = self._base_config()
+        cfg["quality_auto_probe"] = False
+        batch = self.BatchResult()
+        batch.success_count = 4
+
+        with patch.object(self.server.engine, "load_config", side_effect=self._fake_load(cfg)), \
+             patch.object(self.server.engine, "run_registration_common", return_value=batch), \
+             patch("traffic_meter.begin_batch") as m_begin, \
+             patch("traffic_meter.count_account") as m_account, \
+             patch("traffic_meter.finish_batch", return_value={
+                 "bytes_up": 10, "bytes_down": 20, "bytes_total": 30,
+                 "connections": 1, "accounts": 4,
+             }) as m_finish:
+            self.assertEqual(self.client.post("/api/start").status_code, 200)
+            self._wait_finished()
+
+        m_begin.assert_called_once()
+        m_account.assert_called_once_with(4)
+        m_finish.assert_called_once()
+        # 流量汇总必须真的写进日志，而不是被静默吞掉
+        lines = [e["line"] for e in self.client.get("/api/logs?after=0").json()["entries"]]
+        self.assertTrue(any("本批代理流量" in line for line in lines))
+
     def test_stop_uses_existing_cooperative_controller(self):
         cfg = self._base_config()
         entered = threading.Event()

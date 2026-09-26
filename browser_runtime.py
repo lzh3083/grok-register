@@ -132,10 +132,28 @@ def page_has_proxy_error(page_obj):
         return False
     text = "%s\n%s\n%s" % (url, title, body)
     text = text.lower()
-    failed = any(marker in text for marker in (
-        "err_proxy", "proxy connection failed", "proxy server",
+    # Chromium 的错误页把错误码写成 ERR_XXX_YYY（下划线），而不是自然语言，
+    # 所以 "tunnel connection failed" 这类词永远匹配不到
+    # ERR_TUNNEL_CONNECTION_FAILED。实测踩过：住宅节点跑着跑着死掉，页面
+    # 停在错误页，检测没认出来 → 没抛 ProxyTransportError → 被上层当成
+    # 普通应用异常直接 raise，整批 20 个账号全被拖死。
+    # 这里同时按「下划线归一化后的自然语言」和「ERR_ 错误码」两路匹配。
+    normalized = text.replace("_", " ")
+    failed = any(marker in normalized for marker in (
+        "err proxy", "proxy connection failed", "proxy server",
         "proxy authentication", "tunnel connection failed",
         "无法连接到代理服务器", "代理服务器",
+    )) or "chrome-error" in text or any(marker in text for marker in (
+        # 网络层错误码：走代理时出现，一律按「这个节点不可用」处理，
+        # 交给上层释放租约换节点重试。
+        "err_tunnel_connection_failed", "err_socks_connection_failed",
+        "err_proxy_connection_failed", "err_connection_timed_out",
+        "err_connection_reset", "err_connection_closed",
+        "err_connection_refused", "err_connection_failed",
+        "err_name_not_resolved", "err_address_unreachable",
+        "err_internet_disconnected", "err_network_changed",
+        "err_empty_response", "err_timed_out", "err_ssl_protocol_error",
+        "err_http2_protocol_error", "err_quic_protocol_error",
     ))
     if failed and managed_proxy_active():
         raise ProxyTransportError("Chromium 检测到代理连接错误页面")

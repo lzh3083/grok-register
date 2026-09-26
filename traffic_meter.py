@@ -46,11 +46,36 @@ _STATE = {
     "bytes_down": 0,
     "connections": 0,
     "accounts": 0,
+    "archived": False,
 }
 
 
+_TZ_OFFSET = None
+
+
+def _fixed_offset():
+    """进程启动时的本地时区偏移，之后固定不变。
+
+    注册流程会通过 us_consistency 设置 TZ 环境变量并 time.tzset()，把
+    整个进程切成美国时区。若 _now() 直接调 datetime.now()，同一批次会
+    「开始时用服务器时区、结束时用美国时区」打时间戳，实测出现过结束
+    时间比开始时间早 7 小时的记录，窗口统计随之全错。
+
+    这里在首次调用时锁定偏移量，之后即使 TZ 变了也不受影响。
+    """
+    global _TZ_OFFSET
+    if _TZ_OFFSET is None:
+        _TZ_OFFSET = datetime.datetime.now().astimezone().utcoffset() or datetime.timedelta(0)
+    return _TZ_OFFSET
+
+
+def _now_dt():
+    """按固定偏移量取的本地时间（naive）。"""
+    return (datetime.datetime.now(datetime.timezone.utc) + _fixed_offset()).replace(tzinfo=None)
+
+
 def _now():
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return _now_dt().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _traffic_path():
@@ -99,6 +124,7 @@ def begin_batch():
             "bytes_down": 0,
             "connections": 0,
             "accounts": 0,
+            "archived": False,
         })
         data = snapshot()
     _flush(data)
@@ -143,12 +169,18 @@ def flush():
 
 
 def finish_batch():
-    """结束批次：落盘并追加一条历史记录。"""
+    """结束批次：落盘并追加一条历史记录。
+
+    归档后把内存态标记为 archived：内存里的数字保留着（面板「本批」还要
+    显示刚跑完的这批），但 totals()/window() 不能再把它加一遍 —— 它已经
+    进历史了，否则刚跑完的批次会被重复计成双倍。
+    """
     with _LOCK:
         if not _STATE["running"] and _STATE["started_at"] is None:
             return snapshot()
         _STATE["running"] = False
         _STATE["finished_at"] = _now()
+        _STATE["archived"] = True
         data = snapshot()
     _flush(data)
     _append_history(data)
@@ -265,17 +297,26 @@ def summarize(records):
     }
 
 
-def totals():
-    """累计总量：历史批次 + 当前批次（若正在跑）。
+def _live_unarchived():
+    """取内存里「尚未归档」的批次；已归档的返回 None。
 
-    注意当前批次同时存在于内存和文件里，历史文件只在批次结束时追加，
-    所以不会重复计数。
+    归档后内存态与历史记录指的是同一批，再加一次就是双倍。
     """
     with _LOCK:
         live = dict(_STATE)
+    if live.get("archived"):
+        return None
+    if not (live.get("running") or live.get("bytes_up") or live.get("bytes_down")):
+        return None
+    return live
+
+
+def totals():
+    """累计总量：历史批次 + 未归档的当前批次。"""
     records = _history_records()
     result = summarize(records)
-    if live.get("running") or live.get("bytes_up") or live.get("bytes_down"):
+    live = _live_unarchived()
+    if live is not None:
         result["batches"] += 1
         result["bytes_up"] += int(live.get("bytes_up") or 0)
         result["bytes_down"] += int(live.get("bytes_down") or 0)
@@ -298,7 +339,7 @@ def window(hours=24, now=None):
         span = 24.0
     if span <= 0:
         span = 24.0
-    current = now or datetime.datetime.now()
+    current = now or _now_dt()
     cutoff = current - datetime.timedelta(hours=span)
     picked = []
     for record in _history_records():
@@ -306,11 +347,9 @@ def window(hours=24, now=None):
         if stamp is not None and stamp >= cutoff:
             picked.append(record)
     result = summarize(picked)
-    with _LOCK:
-        live = dict(_STATE)
-    live_stamp = _parse_stamp(live.get("started_at"))
-    if (live.get("running") or live.get("bytes_up") or live.get("bytes_down")) and \
-            live_stamp is not None and live_stamp >= cutoff:
+    live = _live_unarchived()
+    live_stamp = _parse_stamp(live.get("started_at")) if live is not None else None
+    if live is not None and live_stamp is not None and live_stamp >= cutoff:
         result["batches"] += 1
         result["bytes_up"] += int(live.get("bytes_up") or 0)
         result["bytes_down"] += int(live.get("bytes_down") or 0)

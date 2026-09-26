@@ -418,12 +418,20 @@ def _run_batch_managed(settings, callbacks, observer, ops):
                 if proxy_failure and has_lease and is_proxy_transport_exception(exc): transport_error = exc
                 if disposition == OUTCOME_UNCERTAIN:
                     _record_uncertain(result, callbacks, stage, exc); retry_count_for_slot = 0
-                elif proxy_failure and disposition == SAFE_NEW_LEASE:
+                elif disposition == SAFE_NEW_LEASE and (proxy_failure or stage == STAGE_PAGE_OPEN):
+                    # 代理异常，或「打开注册页」失败 → 换节点有限次重放。
+                    # 开注册页这一步还没向 xAI 提交任何账号信息，重放不会重复注册。
+                    # 为什么单列 STAGE_PAGE_OPEN：住宅节点中途死掉时，Chromium 停在
+                    # 错误页，表现是「找不到使用邮箱注册按钮」这种普通 Exception，
+                    # 不是 ProxyTransportError。原来这种情况会走下面的 raise，
+                    # 结果一个坏节点把整批 20 个账号全拖死。
+                    # 注意只放开 PAGE_OPEN：浏览器启动失败仍按原设计 fail fast。
                     retry_count_for_slot += 1
+                    reason = "代理在安全阶段不可用" if proxy_failure else "打开注册页失败"
                     if retry_count_for_slot <= settings.max_slot_retry:
-                        callbacks.log(f"[!] 当前账号代理在安全阶段不可用，释放租约并重试 {retry_count_for_slot}/{settings.max_slot_retry}: {exc}")
+                        callbacks.log(f"[!] 当前账号{reason}，释放租约并重试 {retry_count_for_slot}/{settings.max_slot_retry}: {exc}")
                     else:
-                        result.fail_count += 1; result.processed_count += 1; retry_count_for_slot = 0; callbacks.log(f"[-] 当前账号代理重试达到上限，跳过: {exc}")
+                        result.fail_count += 1; result.processed_count += 1; retry_count_for_slot = 0; callbacks.log(f"[-] 当前账号重试达到上限，跳过: {exc}")
                 elif disposition == SAFE_NEW_LEASE:
                     raise
                 else:

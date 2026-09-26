@@ -215,20 +215,31 @@ def _run_job(count: int, controller: Any, accounts_file: str) -> None:
             _job_state["error"] = str(exc)
         _append_log("[!] WebUI 任务异常: %s" % exc)
     finally:
+        # 每一步单独兜底：任何一步失败都不能吞掉后面的归档与日志。
+        # （踩过坑：把函数名写错成 record_account，AttributeError 被整体
+        # except 吞掉，导致流量永远不落盘、面板一直显示 running。）
         try:
             import traffic_meter
-            success_count = int(_job_state.get("success") or 0)
-            if success_count:
-                traffic_meter.record_account(success_count)
-            t_data = traffic_meter.finish_batch()
-            _append_log("[*] 本批代理流量: 上行 %s / 下行 %s / 合计 %s (连接数 %s)" % (
-                traffic_meter.format_bytes(t_data.get("bytes_up")),
-                traffic_meter.format_bytes(t_data.get("bytes_down")),
-                traffic_meter.format_bytes(t_data.get("bytes_total")),
-                t_data.get("connections", 0),
-            ))
         except Exception:
-            pass
+            traffic_meter = None
+        if traffic_meter is not None:
+            try:
+                success_count = int(_job_state.get("success") or 0)
+                if success_count:
+                    traffic_meter.count_account(success_count)
+            except Exception as exc:
+                _append_log("[!] 流量记账失败(账号数): %s" % exc)
+            try:
+                t_data = traffic_meter.finish_batch()
+                _append_log("[*] 本批代理流量: 上行 %s / 下行 %s / 合计 %s (连接数 %s, 账号 %s)" % (
+                    traffic_meter.format_bytes(t_data.get("bytes_up")),
+                    traffic_meter.format_bytes(t_data.get("bytes_down")),
+                    traffic_meter.format_bytes(t_data.get("bytes_total")),
+                    t_data.get("connections", 0),
+                    t_data.get("accounts", 0),
+                ))
+            except Exception as exc:
+                _append_log("[!] 流量批次归档失败: %s" % exc)
         with _job_lock:
             _job_state["running"] = False
             _job_state["finished_at"] = time.time()
@@ -934,7 +945,9 @@ def stop():
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("web.server:app", host="127.0.0.1", port=8092, workers=1)
+    host = str(os.environ.get("GROK_WEB_HOST") or "0.0.0.0").strip()
+    port = int(os.environ.get("GROK_WEB_PORT") or 8092)
+    uvicorn.run("web.server:app", host=host, port=port, workers=1)
 
 
 if __name__ == "__main__":
