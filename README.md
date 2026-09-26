@@ -72,8 +72,6 @@ Grok Register 是一个面向自动化流程研究、测试环境验证和个人
 
 <p><sub>适用于自动化注册、账号管理、数据采集及跨境业务场景，可与浏览器自动化工具和代理池灵活搭配。免费试用，折扣码：<strong><code>xbw7eknur</code></strong></sub></p>
 
-<p><sub>广告合作请联系我：2309501984</sub></p>
-
 ## 项目功能
 
 Grok Register 使用真实 Chromium / Chrome 完成注册流程，并把 GUI、CLI 和 WebUI 都接到同一套注册核心上。

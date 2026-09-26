@@ -72,8 +72,6 @@ HTTP / HTTPS / SOCKS5 support
 
 <p><sub>Suitable for automation registration, account management, data collection, and cross-border business scenarios, with flexible integration into browser automation tools and proxy pools. Free trial available. Discount code: <strong><code>xbw7eknur</code></strong></sub></p>
 
-<p><sub>For advertising partnerships, contact me at: 2309501984</sub></p>
-
 ## Features
 
 Grok Register uses a real Chromium / Chrome browser to complete the registration flow, with GUI, CLI, and WebUI all connected to the same registration core.
