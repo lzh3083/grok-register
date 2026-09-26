@@ -441,6 +441,47 @@ Within a single account attempt, the browser, email, NSFW, and default CPA all s
 
 For complete parameters, protocol mappings, runtime behavior, and health rules, see [`docs/proxy-pool.en.md`](docs/proxy-pool.en.md).
 
+### NovProxy Residential Proxies
+
+The project ships a NovProxy residential-node extractor and pre-warmer that writes a node file `proxy_pool_file` can read directly:
+
+```bash
+# Extract 10 US residential nodes, verify each real exit, then write the node file
+python3 novproxy.py generate --out ./novproxy_nodes.txt --region US --num 10 --minutes 120
+
+# Verify existing nodes (no new extract request)
+python3 novproxy.py probe --file ./novproxy_nodes.txt
+```
+
+The "Extract NovProxy (num=N)" button in the WebUI proxy-pool panel uses the same path; `num` defaults to `novproxy_num` and falls back to `register_count`.
+
+Related configuration:
+
+| Key | Description |
+| --- | --- |
+| `novproxy_api` | Extract endpoint, defaults to `https://white.novproxy.com/white/api`; overridable via the `NOVPROXY_API` environment variable |
+| `novproxy_region` | Target region code, defaults to `US` |
+| `novproxy_minutes` | Sticky session duration in minutes, defaults to `120` |
+| `novproxy_num` | Batch size; keep it aligned with the register count (one dedicated exit IP per account) |
+
+The extract endpoint looks like:
+
+```text
+https://white.novproxy.com/white/api?region=US&num=N&time=120&format=1&type=txt
+```
+
+It returns plain text, one `host:port` per line, **with no username or password** — authentication is by source-IP whitelist.
+
+#### Pitfalls Found in Practice
+
+- **Whitelist the public IP that makes the extract request first.** Otherwise the endpoint returns `not added to whitelist` and the tool reports "源 IP 未加入白名单". This is the requester's public IP, not the proxy exit IP.
+- **Use `time=120`, not `time=10`.** In practice `time=10` yields only 5/10 immediately usable nodes that die within tens of seconds, while `time=120` gives 9/10 usable with independent port ranges. The sticky duration must also exceed a full single-account run (registration + CPA export), or the IP changes mid-flow.
+- **The entry point is a datacenter; only the exit is residential.** Extracted `host:port` entries usually live in datacenters such as Zenlayer Hong Kong, so judging quality by the entry IP is meaningless — always probe the real exit.
+- **Some ports fail on the first connection** and succeed after a retry a dozen seconds later. The tool performs one warm-up retry by default, so a first-round failure does not mean the node is unusable.
+- **A few exits are not in the target country.** Nodes have been observed landing in Azerbaijan, so every node's real exit country is checked and mismatches are dropped instead of being written to the node file.
+- **Each `host:port` is an independent session** with its own exit IP; duplicate exit IPs are de-duplicated.
+- **Nodes must be written as `socks5h://host:port`.** The protocol prefix is required, or a bare `host:port` is parsed as an HTTP proxy; the `h` is required too, because the project often runs under Clash/Mihomo-style environments where container DNS returns fake-ip (`198.18.0.0/15`) for most domains. `socks5://` resolves locally and hands the fake-ip upstream, which can never connect. See [SOCKS DNS Semantics](docs/proxy-pool.en.md#socks-dns-semantics).
+
 ## Optional Multi-Worker Registration
 
 Disabled by default:

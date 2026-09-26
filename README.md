@@ -441,6 +441,47 @@ ss://...
 
 完整参数、协议映射、运行时和健康度规则见 [`docs/proxy-pool.md`](docs/proxy-pool.md)。
 
+### NovProxy 住宅代理
+
+项目内置 NovProxy 住宅节点提取与预热工具，可以直接生成 `proxy_pool_file` 能读的节点文件：
+
+```bash
+# 提取 10 个美国住宅节点，逐个校验真实出口后写入节点文件
+python3 novproxy.py generate --out ./novproxy_nodes.txt --region US --num 10 --minutes 120
+
+# 校验已有节点（不再发提取请求）
+python3 novproxy.py probe --file ./novproxy_nodes.txt
+```
+
+WebUI 代理池面板的「提取 NovProxy 节点 (一号一IP)」按钮走同一条链路，`num` 默认取 `novproxy_num`，未配置时回退到 `register_count`。
+
+相关配置：
+
+| 配置项 | 说明 |
+| --- | --- |
+| `novproxy_api` | 提取接口，默认 `https://white.novproxy.com/white/api`，可用环境变量 `NOVPROXY_API` 覆盖 |
+| `novproxy_region` | 目标地区代码，默认 `US` |
+| `novproxy_minutes` | 会话粘性时长（分钟），默认 `120` |
+| `novproxy_num` | 提取数量，建议与注册数量一致（一账号独占一个出口 IP） |
+
+提取接口形如：
+
+```text
+https://white.novproxy.com/white/api?region=US&num=N&time=120&format=1&type=txt
+```
+
+返回纯文本，一行一个 `host:port`，**不带账号密码**——鉴权靠源 IP 白名单。
+
+#### 实测踩过的坑
+
+- **先把发起提取的机器公网 IP 加进白名单**。否则接口返回 `not added to whitelist`，工具会直接报「源 IP 未加入白名单」。这里认的是请求方公网 IP，不是代理出口 IP。
+- **`time` 用 120，别用 10**。实测 `time=10` 立即可用率只有 5/10，且几十秒内就批量失效；`time=120` 时 9/10 立即可用，端口段也互相独立。粘性时长还必须大于单账号完整流程耗时（注册 + CPA 导出），否则 IP 会在流程中途变化。
+- **入口是机房，出口才是住宅 IP**。提取到的 `host:port` 入口多在 Zenlayer 香港等机房，拿入口 IP 判断质量没有意义，必须实测真实出口。
+- **部分端口首次连接会失败**，等十几秒重试就能通。工具默认做一轮预热重试，所以首轮失败不等于节点不可用。
+- **个别出口不在目标国家**。实测有节点落到阿塞拜疆，因此每个节点都会校验真实出口国家，不匹配的直接剔除，不会写进节点文件。
+- **每个 `host:port` 是独立会话**，出口 IP 各自不同；重复出口 IP 会被去重。
+- **节点必须写成 `socks5h://host:port`**。协议前缀不能省，否则裸 `host:port` 会被订阅解析当成 HTTP 代理；`h` 也不能丢，项目常跑在 Clash/Mihomo 类环境里，容器 DNS 对多数域名返回 fake-ip（`198.18.0.0/15`），`socks5://` 会先本地解析再交给上游，必然连不上。原因见 [SOCKS DNS 语义](docs/proxy-pool.md#socks-dns-语义)。
+
 ## 可选多线程注册
 
 默认关闭：
