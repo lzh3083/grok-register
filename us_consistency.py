@@ -110,7 +110,7 @@ def configure(config_ref) -> None:
 
 
 # 美国各州 → 时区。用于按代理真实出口自动对齐时区。
-# 注意：MooProxy 等住宅代理的 state 参数实际不生效（实测请求 New York
+# 注意：住宅代理的 state 参数实际不生效（实测请求 New York
 # 会分到 Nevada/Texas），所以不能依赖下单参数，必须以探测到的真实
 # 出口地区为准，否则会出现「IP 在加州、时区却是纽约」这类矛盾特征。
 _US_STATE_TIMEZONE = {

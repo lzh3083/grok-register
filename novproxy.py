@@ -233,6 +233,24 @@ def write_nodes(path, good, log=_log, scheme="socks5h"):
     return len(lines)
 
 
+def mask_node(node):
+    """面板展示用：隐去节点里的账号密码。
+
+    面板无鉴权，代理凭据属于敏感信息，绝不能回显明文。
+    """
+    if isinstance(node, dict):
+        node = node.get("node") or ""
+    text = str(node or "")
+    if "://" not in text:
+        return text
+    scheme, rest = text.split("://", 1)
+    if "@" not in rest:
+        return text
+    creds, host = rest.rsplit("@", 1)
+    user = creds.split(":", 1)[0]
+    return "%s://%s:***@%s" % (scheme, user, host)
+
+
 def generate(api_base, out_path, region="US", want=10, minutes=120, expect_country="US",
              workers=10, timeout=25.0, attempts=3, rounds=3, log=_log):
     """提取 + 验证 + 写文件，直到凑够 want 个或轮次用尽。"""

@@ -29,31 +29,28 @@
     ['us_consistency_timezone','text'],
     ['us_consistency_locale','text'],
     ['us_consistency_expect_country','text'],
+    ['novproxy_api','text','full'],
+    ['novproxy_region','text'],
+    ['novproxy_minutes','number',{min:1,max:1440}],
+    ['novproxy_num','number',{min:1,max:500}],
+    ['quality_auto_probe','checkbox'],
+    ['quality_soft_threshold','number',{min:1,max:5000}],
     ['browser_path','text','full'],
-    ['mooproxy_api','text','full'],
-    ['mooproxy_country','text'],
-    ['mooproxy_state','text'],
-    ['mooproxy_via','text','full'],
-    ['mooproxy_bridge_port','number',{min:1,max:65535}],
-    ['lajiao_api_base','text','full'],
-    ['lajiao_regions','text'],
-    ['lajiao_num','number',{min:1,max:100}],
-    ['lajiao_sticky_minutes','number',{min:1,max:120}],
-    ['lajiao_extract_via','text','full'],
-    ['lajiao_require_residential','checkbox'],
-    ['lajiao_require_country','text'],
     ['cloudflare_fixed_address','text','full'],
     ['cloudflare_fixed_jwt','text','full'],
   ];
 
   const zh = {
     tabProxy:'代理池', proxyReload:'重新加载', proxyTest:'测试节点', proxyStatus:'代理节点状态',
+    novproxyExtract:'提取 NovProxy 节点 (一号一IP)',
     cpaStatus:'CPA 凭据', cpaRefresh:'刷新', cpaEmail:'邮箱', cpaExpired:'有效期至', cpaFile:'文件',
     cpaNone:'暂无已导出的凭据', cpaBfs:'BFS 标记', cpaBfsYes:'已标记', cpaSyncOn:'远程同步', cpaSyncOff:'未启用远程同步',
     cpaSyncOk:'目标可达', cpaSyncFail:'目标不可达', cpaFailed:'导出失败', cpaCount:'个凭据',
-    trafficTitle:'本批代理流量', trafficRefresh:'刷新', trafficStarted:'开始时间',
+    qualityScan:'降智质量扫描', qualityScanning:'扫描中...', cpaQuality:'降智检测',
+    trafficTitle:'代理流量计量', trafficRefresh:'刷新', trafficStarted:'开始时间',
     trafficUp:'上行', trafficDown:'下行', trafficTotal:'合计', trafficAccounts:'成功账号',
-    trafficNone:'本批暂无流量记录', trafficAvgBatch:'历史批次均值', trafficAvgAccount:'每账号均值',
+    trafficNone:'暂无流量记录', trafficAvgBatch:'历史批次均值', trafficAvgAccount:'每账号均值',
+    trafficLifetime:'历史总用量', trafficWindow1h:'近1h', trafficWindow24h:'近24h', trafficWindow7d:'近7d',
     proxyEmpty:'暂无代理节点', proxyNode:'节点', proxyRunHealth:'运行健康', proxyProbeStatus:'探测状态',
     proxyDetail:'详细', proxyStatusCol:'状态', proxyNodesUnit:'个节点', proxyUsable:'可用',
     proxyUnhealthy:'异常', proxyCooling:'冷却中', proxyRetired:'已退役', proxyDisabled:'已停用',
@@ -67,12 +64,15 @@
   };
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
+    novproxyExtract:'Extract NovProxy (num=N)',
     cpaStatus:'CPA credentials', cpaRefresh:'Refresh', cpaEmail:'Email', cpaExpired:'Expires', cpaFile:'File',
     cpaNone:'No exported credentials yet', cpaBfs:'BFS flag', cpaBfsYes:'flagged', cpaSyncOn:'Remote sync', cpaSyncOff:'Remote sync disabled',
     cpaSyncOk:'target reachable', cpaSyncFail:'target unreachable', cpaFailed:'Export failed', cpaCount:'files',
-    trafficTitle:'Batch proxy traffic', trafficRefresh:'Refresh', trafficStarted:'Started',
+    qualityScan:'Probe Quality', qualityScanning:'Probing...', cpaQuality:'Quality',
+    trafficTitle:'Proxy Traffic Meter', trafficRefresh:'Refresh', trafficStarted:'Started',
     trafficUp:'Up', trafficDown:'Down', trafficTotal:'Total', trafficAccounts:'Accounts',
-    trafficNone:'No traffic recorded for this batch', trafficAvgBatch:'Avg per batch', trafficAvgAccount:'Avg per account',
+    trafficNone:'No traffic recorded', trafficAvgBatch:'Avg per batch', trafficAvgAccount:'Avg per account',
+    trafficLifetime:'Lifetime Total', trafficWindow1h:'Past 1h', trafficWindow24h:'Past 24h', trafficWindow7d:'Past 7d',
     proxyEmpty:'No proxy nodes', proxyNode:'Node', proxyRunHealth:'Runtime health', proxyProbeStatus:'Probe status',
     proxyDetail:'Details', proxyStatusCol:'Status', proxyNodesUnit:'nodes', proxyUsable:'usable',
     proxyUnhealthy:'unhealthy', proxyCooling:'cooling', proxyRetired:'retired', proxyDisabled:'disabled',
@@ -113,19 +113,13 @@
     us_consistency_timezone:['浏览器时区','必须与住宅 IP 所在国家一致。美国东部填 America/New_York，西部填 America/Los_Angeles。'],
     us_consistency_locale:['浏览器语言','需与出口国家匹配，美国用 en-US。'],
     us_consistency_expect_country:['代理出口期望国家','启动浏览器前探测代理真实出口，只有国家匹配时才按落地州对齐时区；不匹配则保持原时区，避免"将错就错"。'],
+    novproxy_api:['NovProxy 提取接口','动态住宅代理 API 提取地址，返回格式为 host:port。'],
+    novproxy_region:['NovProxy 地区代码','目标地区代码，默认 US。'],
+    novproxy_minutes:['NovProxy 粘性时长（分钟）','住宅 IP 保持时间，默认 120 分钟（覆盖注册及 CPA 导出全流程）。'],
+    novproxy_num:['NovProxy 提取数量 (num=N)','建议与注册数量匹配：一账号独占一个出口 IP，避免同 IP 关联。'],
+    quality_auto_probe:['注册后自动降智测试','注册并导出 CPA 后自动发起流式质量探测，验证账号推理健康度。'],
+    quality_soft_threshold:['降智测试可疑阈值','低于该推理 token 数量（默认 50）标记为可疑；0 标记为降智。'],
     browser_path:['Chromium 路径','留空自动探测（读 GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH 环境变量及常见安装位置）。容器内浏览器装在非标准目录时必须显式指定。'],
-    mooproxy_api:['MooProxy 生成接口','住宅代理节点生成 API。站点在 Cloudflare 后，需带浏览器 UA 才能访问。'],
-    mooproxy_country:['MooProxy 国家','目标国家代码，美国填 US。'],
-    mooproxy_state:['MooProxy 州/省','仅用于构造请求；实测服务端不按此分配，实际落地州随机，时区由出口探测自动对齐。'],
-    mooproxy_via:['MooProxy 中转代理','入口从本机直连时握手无响应，必须经干净出口中转，例如 socks5h://127.0.0.1:1080。'],
-    mooproxy_bridge_port:['MooProxy 本地桥端口','链式桥监听端口，浏览器连本地端口再经中转连到 MooProxy。'],
-    lajiao_api_base:['辣椒HTTP 提取接口','动态住宅代理的 IP 提取 API 地址。'],
-    lajiao_regions:['辣椒提取地区','目标地区代码，美国填 US。'],
-    lajiao_num:['辣椒单次提取数','建议与 register_count 匹配：每个账号独占一个 IP。'],
-    lajiao_sticky_minutes:['辣椒粘性时长（分钟）','粘性会话保持时间，必须大于单账号完整流程耗时（注册+CPA），否则 IP 会在中途变化。'],
-    lajiao_extract_via:['辣椒提取上游代理','调用提取接口时使用的上游代理，用于固定白名单源 IP（本机出口可能漂移）。'],
-    lajiao_require_residential:['仅接受住宅 IP','入池前探测 hosting 标记，剔除机房 IP。'],
-    lajiao_require_country:['强制出口国家','校验提取到的节点必须属于该国家，例如 US。'],
     cloudflare_fixed_address:['固定邮箱地址','留空则每个账号自动新建地址。填写后复用该地址，适用于实例已关闭建址的场景。'],
     cloudflare_fixed_jwt:['固定邮箱 JWT','与固定邮箱地址配套的地址级凭证（网页链接里 ?jwt= 后面那串）。'],
   });
@@ -157,19 +151,13 @@
     us_consistency_timezone:['Browser timezone','Must match the residential IP country. Use America/New_York for US East, America/Los_Angeles for US West.'],
     us_consistency_locale:['Browser locale','Should match the exit country; en-US for the United States.'],
     us_consistency_expect_country:['Expected exit country','Probes the real proxy exit before launching the browser and aligns the timezone to the actual region only when the country matches; otherwise the timezone is left untouched.'],
+    novproxy_api:['NovProxy extract API','Residential proxy extract API endpoint, returns host:port lines.'],
+    novproxy_region:['NovProxy region','Target region code, defaults to US.'],
+    novproxy_minutes:['NovProxy sticky minutes','Sticky session duration, defaults to 120 minutes.'],
+    novproxy_num:['NovProxy batch size (num=N)','Keep aligned with register count: one dedicated residential IP per account.'],
+    quality_auto_probe:['Auto quality probe','Automatically probe reasoning tokens after account registration and CPA export.'],
+    quality_soft_threshold:['Soft reasoning threshold','Reasoning tokens below this count (default 50) marked as soft/suspicious.'],
     browser_path:['Chromium path','Leave empty to auto-detect (via GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH and common install locations). Required when the browser lives outside standard paths, e.g. inside a container.'],
-    mooproxy_api:['MooProxy generate API','Residential proxy node generation endpoint. The site sits behind Cloudflare, so a browser User-Agent is required.'],
-    mooproxy_country:['MooProxy country','Target country code; use US for the United States.'],
-    mooproxy_state:['MooProxy state','Only used to build the request; the server does not honour it in practice, so the actual region is random and the timezone is aligned from the exit probe.'],
-    mooproxy_via:['MooProxy relay proxy','The endpoint does not complete a handshake when dialled directly from this host; relay through a clean exit such as socks5h://127.0.0.1:1080.'],
-    mooproxy_bridge_port:['MooProxy bridge port','Local chained-bridge port; the browser connects locally and traffic is relayed on to MooProxy.'],
-    lajiao_api_base:['Lajiao extract API','IP extraction endpoint for the dynamic residential proxy.'],
-    lajiao_regions:['Lajiao region','Target region code, e.g. US.'],
-    lajiao_num:['Lajiao batch size','Keep aligned with register_count: one dedicated IP per account.'],
-    lajiao_sticky_minutes:['Lajiao sticky minutes','Sticky session duration; must exceed a full account flow (registration + CPA) or the IP changes mid-flow.'],
-    lajiao_extract_via:['Lajiao extract upstream','Upstream proxy used when calling the extract API, to pin a whitelisted source IP (this host may egress from multiple IPs).'],
-    lajiao_require_residential:['Residential only','Probe the hosting flag and drop datacenter IPs before they enter the pool.'],
-    lajiao_require_country:['Enforce exit country','Reject extracted nodes that do not belong to this country, e.g. US.'],
     cloudflare_fixed_address:['Fixed mail address','Leave empty to create a fresh address per account. Set it to reuse one address, e.g. when address creation is disabled on the instance.'],
     cloudflare_fixed_jwt:['Fixed mail JWT','Address-level credential paired with the fixed address (the ?jwt= value in the web UI URL).'],
   });
@@ -197,6 +185,7 @@
       <div class="proxy-status-head">
         <strong data-i18n="proxyStatus">${t('proxyStatus')}</strong>
         <div class="proxy-status-actions">
+          <button type="button" id="novproxyExtractBtn" class="mini-btn"><span data-i18n="novproxyExtract">${t('novproxyExtract')}</span></button>
           <button type="button" id="proxyDetailBtn" class="mini-btn"><span data-i18n="proxyDetail">${t('proxyDetail')}</span></button>
           <button type="button" id="proxyReloadBtn" class="mini-btn"><span data-i18n="proxyReload">${t('proxyReload')}</span></button>
           <button type="button" id="proxyTestBtn" class="mini-btn"><span data-i18n="proxyTest">${t('proxyTest')}</span></button>
@@ -237,12 +226,14 @@
       <div class="proxy-status-head">
         <strong data-i18n="cpaStatus">${t('cpaStatus')}</strong>
         <div class="proxy-status-actions">
+          <button type="button" id="qualityScanBtn" class="mini-btn"><span data-i18n="qualityScan">${t('qualityScan')}</span></button>
           <button type="button" id="cpaRefreshBtn" class="mini-btn"><span data-i18n="cpaRefresh">${t('cpaRefresh')}</span></button>
         </div>
       </div>
       <div id="cpaSummary" class="proxy-summary"></div>
       <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
         <th data-i18n="cpaEmail">${t('cpaEmail')}</th><th data-i18n="cpaExpired">${t('cpaExpired')}</th>
+        <th data-i18n="cpaQuality">${t('cpaQuality')}</th>
         <th data-i18n="cpaBfs">${t('cpaBfs')}</th>
         <th data-i18n="cpaFile">${t('cpaFile')}</th>
       </tr></thead><tbody id="cpaRows"></tbody></table></div>`;
@@ -289,7 +280,7 @@
     return `${key === 'ipv4_probe' ? 'IPv4' : 'IPv6'} ${probeText(p.status)}${p.latency_ms ? ' '+p.latency_ms+'ms' : ''}${p.exit_ip ? ' '+p.exit_ip : ''}`;
   }
   // 代理地址里含明文账密，展示时必须遮罩。
-  // MooProxy 的节点靠 session-XXXX 区分，把它提出来当标签最直观。
+  // 住宅代理节点靠 session-XXXX 之类的标识区分，把它提出来当标签最直观。
   function maskProxy(raw) {
     const text = String(raw || '');
     try {
@@ -384,6 +375,7 @@
     const items = Array.isArray(data.credentials) ? data.credentials : [];
     const failed = Array.isArray(data.failed) ? data.failed : [];
     const sync = data.sync || {};
+    const qs = data.quality_summary || {};
     const parts = [];
     parts.push(`${data.count || 0} ${t('cpaCount')}`);
     if (!data.export_enabled) parts.push('⚠️ export disabled');
@@ -395,17 +387,43 @@
     }
     if (failed.length) parts.push(`${t('cpaFailed')}: ${failed.length}`);
     if (data.bfs_flagged) parts.push(`${t('cpaBfs')}: ${data.bfs_flagged}`);
+    if (qs.total) {
+      parts.push(`质量: ✅${qs.healthy || 0} · 🧠${qs.hard || 0} · ⚠️${qs.soft || 0} · 🚫${qs.risk || 0}`);
+    }
+    if (data.quality_scanning) {
+      const st = data.quality_state || {};
+      parts.push(`[${t('qualityScanning')} ${st.completed || 0}/${st.total || 0}]`);
+    }
     summary.textContent = parts.join(' · ');
     if (!items.length) {
-      rows.innerHTML = `<tr><td colspan="3" class="proxy-empty">${esc(t('cpaNone'))}</td></tr>`;
+      rows.innerHTML = `<tr><td colspan="5" class="proxy-empty">${esc(t('cpaNone'))}</td></tr>`;
       return;
     }
-    rows.innerHTML = items.map(item => `<tr>
+    rows.innerHTML = items.map(item => {
+      let qualityHtml = '<span style="color:var(--text-dim, #888)">—</span>';
+      if (item.quality) {
+        const v = item.quality.verdict;
+        const tok = item.quality.reasoning_tokens || 0;
+        if (v === 'healthy') {
+          qualityHtml = `<span style="color:#10b981;font-weight:600">✅ 正常 (${tok} tok)</span>`;
+        } else if (v === 'hard') {
+          qualityHtml = `<span style="color:#ef4444;font-weight:600">🧠 降智 (0 tok)</span>`;
+        } else if (v === 'soft') {
+          qualityHtml = `<span style="color:#f59e0b;font-weight:600">⚠️ 可疑 (${tok} tok)</span>`;
+        } else if (v === 'risk') {
+          qualityHtml = `<span style="color:#f87171" title="${esc(item.quality.error || '')}">🚫 不可用</span>`;
+        } else if (v === 'error') {
+          qualityHtml = `<span style="color:#a8a29e" title="${esc(item.quality.error || '')}">❓ 出错</span>`;
+        }
+      }
+      return `<tr>
       <td>${esc(item.email || '—')}</td>
       <td>${esc(item.expired || '—')}</td>
+      <td>${qualityHtml}</td>
       <td>${item.bfs ? '<span class="proxy-dot bad"></span>' + esc(t('cpaBfsYes')) + (item.bfs_value != null ? ' (' + esc(item.bfs_value) + ')' : '') : '—'}</td>
       <td title="${esc(item.file)}">${esc(item.file)}</td>
-    </tr>`).join('');
+    </tr>`;
+    }).join('');
   }
   async function refreshCpaStatus() {
     try {
@@ -420,11 +438,21 @@
     const summary = document.getElementById('trafficSummary');
     if (!rows || !summary) return;
     const cur = data.current || {};
+    const life = data.lifetime || {};
+    const win = data.windows || {};
     const parts = [];
-    parts.push(`${t('trafficTotal')}: ${cur.bytes_total_text || '—'}`);
+    parts.push(`本批: ${cur.bytes_total_text || '0 B'} (↑${formatBytes(cur.bytes_up)} · ↓${formatBytes(cur.bytes_down)})`);
+    if (life && (life.bytes_total || life.bytes_total_text)) {
+      parts.push(`${t('trafficLifetime')}: ${life.bytes_total_text || formatBytes(life.bytes_total)}`);
+    }
+    const winParts = [];
+    if (win.h1 && win.h1.bytes_total) winParts.push(`${t('trafficWindow1h')}: ${win.h1.bytes_total_text}`);
+    if (win.h24 && win.h24.bytes_total) winParts.push(`${t('trafficWindow24h')}: ${win.h24.bytes_total_text}`);
+    if (win.h168 && win.h168.bytes_total) winParts.push(`${t('trafficWindow7d')}: ${win.h168.bytes_total_text}`);
+    if (winParts.length) parts.push(winParts.join(' · '));
     if (data.average_batch) parts.push(`${t('trafficAvgBatch')}: ${data.average_batch_text}`);
     if (data.average_account) parts.push(`${t('trafficAvgAccount')}: ${data.average_account_text}`);
-    summary.textContent = parts.join(' · ');
+    summary.textContent = parts.join(' | ');
     const history = Array.isArray(data.history) ? data.history : [];
     if (!history.length) {
       rows.innerHTML = `<tr><td colspan="5" class="proxy-empty">${esc(t('trafficNone'))}</td></tr>`;
@@ -465,6 +493,50 @@
   const reloadBtn = document.getElementById('proxyReloadBtn'); const testBtn = document.getElementById('proxyTestBtn');
   if (reloadBtn) reloadBtn.onclick = () => proxyAction('./api/proxy-pool/reload');
   if (testBtn) testBtn.onclick = () => proxyAction('./api/proxy-pool/test');
+  const novproxyBtn = document.getElementById('novproxyExtractBtn');
+  if (novproxyBtn) {
+    novproxyBtn.onclick = async () => {
+      if (dirty.size && !await saveConfig()) return;
+      novproxyBtn.disabled = true;
+      const originHtml = novproxyBtn.innerHTML;
+      novproxyBtn.textContent = '提取中...';
+      try {
+        const r = await fetch('./api/proxy-pool/novproxy', {method: 'POST'});
+        const d = await r.json();
+        if (!r.ok) {
+          setNotice(d.detail || 'NovProxy 提取失败', true);
+        } else {
+          setNotice(`NovProxy 成功提取 ${d.count} 个节点`);
+          renderProxyStatus(d);
+        }
+      } catch (e) {
+        setNotice(e.message, true);
+      } finally {
+        novproxyBtn.disabled = false;
+        novproxyBtn.innerHTML = originHtml;
+      }
+    };
+  }
+  const qualityBtn = document.getElementById('qualityScanBtn');
+  if (qualityBtn) {
+    qualityBtn.onclick = async () => {
+      qualityBtn.disabled = true;
+      try {
+        const r = await fetch('./api/quality/scan', {method: 'POST'});
+        const d = await r.json();
+        if (!r.ok) {
+          setNotice(d.detail || '启动失败', true);
+        } else {
+          setNotice(d.message || '降智扫描已在后台启动');
+          refreshCpaStatus();
+        }
+      } catch (e) {
+        setNotice(e.message, true);
+      } finally {
+        setTimeout(() => { qualityBtn.disabled = false; }, 3000);
+      }
+    };
+  }
   const cpaRefreshBtn = document.getElementById('cpaRefreshBtn');
   if (cpaRefreshBtn) cpaRefreshBtn.onclick = () => refreshCpaStatus();
   const trafficRefreshBtn = document.getElementById('trafficRefreshBtn');

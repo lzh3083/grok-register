@@ -75,7 +75,42 @@ def _recv_exact(sock, size):
     return data
 
 
-def _relay(left, right, timeout=90):
+def _resolve_meter():
+    """返回流量计量函数 (direction, nbytes)，不可用时返回 None。
+
+    延迟导入：traffic_meter 依赖环境变量配置路径，且单元测试里可能不
+    存在，所以任何异常都当作「不统计」，绝不影响代理转发本身。
+    """
+    try:
+        import traffic_meter
+    except Exception:
+        return None
+    record = getattr(traffic_meter, "record", None)
+    return record if callable(record) else None
+
+
+def _meter_up(bridge, payload):
+    """把已直接发往上游的请求字节计入上行。
+
+    非 CONNECT 的普通 HTTP 请求，请求头是绕过 _relay 直接 sendall 给
+    上游的。若不在这里补记，上行会恒偏小（实测漏掉整个请求头）。
+    """
+    meter = bridge._meter_fn()
+    if meter is None or not payload:
+        return
+    try:
+        meter("up", len(payload))
+    except Exception:
+        pass
+
+
+def _relay(left, right, timeout=90, meter=None):
+    """双向中继，并可选地统计字节数。
+
+    meter 接收 (direction, nbytes)，direction 为 "up"/"down"：
+    up 是浏览器→上游（上行），down 是上游→浏览器（下行）。
+    计量失败绝不能影响中继本身。
+    """
     left.settimeout(timeout)
     right.settimeout(timeout)
     sockets = [left, right]
@@ -88,6 +123,11 @@ def _relay(left, right, timeout=90):
             if not data:
                 return
             peer = right if sock is left else left
+            if meter is not None:
+                try:
+                    meter("up" if sock is left else "down", len(data))
+                except Exception:
+                    pass
             peer.sendall(data)
 
 
@@ -147,6 +187,7 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
             initial = _recv_until_headers(self.request, timeout=bridge.timeout)
             if not initial:
                 return
+            bridge._count_connection()
             first_line = initial.split(b"\r\n", 1)[0].decode("latin1", "ignore")
             if first_line.upper().startswith("CONNECT "):
                 target = first_line.split()[1]
@@ -167,16 +208,21 @@ class _BridgeHandler(socketserver.BaseRequestHandler):
                     host, port = _split_host_port(target, 443)
                     upstream = bridge.open_socks_target(host, port)
                     self.request.sendall(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: local-bridge\r\n\r\n")
-                _relay(self.request, upstream, timeout=bridge.relay_timeout)
+                _relay(self.request, upstream, timeout=bridge.relay_timeout,
+                       meter=bridge._meter_fn())
                 return
             if bridge.is_http_upstream:
                 upstream = bridge.open_proxy_socket()
-                upstream.sendall(bridge.inject_proxy_auth(initial))
+                payload = bridge.inject_proxy_auth(initial)
+                upstream.sendall(payload)
+                _meter_up(bridge, payload)
             else:
                 host, port, request_data = _rewrite_http_request(initial)
                 upstream = bridge.open_socks_target(host, port)
                 upstream.sendall(request_data)
-            _relay(self.request, upstream, timeout=bridge.relay_timeout)
+                _meter_up(bridge, request_data)
+            _relay(self.request, upstream, timeout=bridge.relay_timeout,
+                   meter=bridge._meter_fn())
         except ProxyBridgeError as exc:
             bridge.record_diagnostic(exc.kind, str(exc))
             try:
@@ -223,6 +269,24 @@ class LocalProxyBridge(object):
         self.local_proxy = ""
         self._diag_lock = threading.Lock()
         self._last_diagnostic = None
+        # 流量计量回调 (direction, nbytes)。存成**实例**属性：实例属性
+        # 不走描述符协议，取出来就是原函数。反之若挂在类上，self.meter
+        # 会变成绑定方法（自动多传 self），record 参数错位后被 except
+        # 静默吞掉 —— 表现为「连接数正常但字节数恒为 0」。
+        self.meter = _resolve_meter()
+
+    def _meter_fn(self):
+        """取流量计量函数；不可用时返回 None。"""
+        return self.meter
+
+    def _count_connection(self):
+        if self.meter is None:
+            return
+        try:
+            import traffic_meter
+            traffic_meter.count_connection()
+        except Exception:
+            pass
 
     def record_diagnostic(self, kind, message):
         with self._diag_lock:

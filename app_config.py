@@ -114,28 +114,35 @@ DEFAULT_CONFIG = {
     # 代理出口的期望国家。启动浏览器前会探测真实出口，只有国家匹配时
     # 才按落地州对齐时区；不匹配则保持原时区不动，避免"将错就错"。
     "us_consistency_expect_country": "US",
-    # ---- MooProxy 美国住宅代理（本仓库新增）----
-    # 由 mooproxy_bridge.py 使用：先调生成接口拿节点，再经干净出口中转。
-    # 入口从本机直连时握手无响应，必须经 --via 指定的 SOCKS5 中转。
-    "mooproxy_api": "https://api.mooproxy.xyz/v1/api/generate_proxies",
-    "mooproxy_country": "US",
-    # state 仅用于构造请求；实测服务端不按此分配，实际落地州随机。
-    "mooproxy_state": "New York",
-    "mooproxy_via": "socks5h://127.0.0.1:1080",
-    "mooproxy_bridge_port": 8890,
+    # ---- NovProxy 美国动态住宅代理 ----
+    # 提取接口。节点按会话粘性保持，minutes 必须大于单账号完整流程耗时
+    # （注册 + CPA 导出），否则 IP 会在流程中途变化。
+    "novproxy_api": "https://white.novproxy.com/white/api",
+    "novproxy_region": "US",
+    "novproxy_minutes": 120,
+    "novproxy_num": 5,
+    # ---- 降智测试（Quality Probe）----
+    # 账号注册后是否自动做一次降智检测并写入记录。
+    "quality_auto_probe": False,
+    # 降智测试可疑阈值（低于此推理 token 数量视为可疑）。
+    "quality_soft_threshold": 50,
     # Chromium 可执行文件路径。留空则按环境变量与常见安装位置自动探测；
     # 容器/服务器上浏览器常装在非标准目录，此时需显式指定。
     "browser_path": "",
-    # ---- 辣椒HTTP 美国动态住宅代理（本仓库新增）----
-    # 由 lajiao_proxy.py 提供；配置后可用其 serve 子命令做本地订阅源。
-    "lajiao_api_base": "http://api.lajiaohttp.com/api/extract_ip",
-    "lajiao_regions": "US",
-    "lajiao_num": 8,
-    "lajiao_sticky_minutes": 60,
-    "lajiao_extract_via": "",
-    "lajiao_require_residential": True,
-    "lajiao_require_country": "US",
 }
+
+
+# 已废弃的配置项：旧 config.json 里可能还留着，校验时静默忽略并剔除。
+# 直接报「未知配置项」会让老配置文件升级后无法启动，所以这里显式列出。
+DEPRECATED_CONFIG_KEYS = frozenset({
+    # MooProxy：节点存活时间只有几分钟，已由 NovProxy 取代。
+    "mooproxy_api", "mooproxy_country", "mooproxy_state",
+    "mooproxy_via", "mooproxy_bridge_port",
+    # 辣椒HTTP：接口已不再使用，统一走 NovProxy。
+    "lajiao_api_base", "lajiao_regions", "lajiao_num",
+    "lajiao_sticky_minutes", "lajiao_extract_via",
+    "lajiao_require_residential", "lajiao_require_country",
+})
 
 
 config = DEFAULT_CONFIG.copy()
@@ -176,10 +183,10 @@ def _require_string(cfg, key, path=False):
 def validate_config_structure(raw):
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a JSON object")
-    unknown = sorted(set(raw) - set(DEFAULT_CONFIG))
+    unknown = sorted(set(raw) - set(DEFAULT_CONFIG) - DEPRECATED_CONFIG_KEYS)
     if unknown:
         raise ConfigError("未知配置项: " + ", ".join(unknown))
-    cfg = {**DEFAULT_CONFIG, **raw}
+    cfg = {**DEFAULT_CONFIG, **{k: v for k, v in raw.items() if k not in DEPRECATED_CONFIG_KEYS}}
     bool_keys = (
         "enable_nsfw", "sso_risk_gate_enabled", "grok2api_auto_add_local", "grok2api_auto_add_remote",
         "grok2api_allow_legacy_full_save", "cpa_export_enabled",
@@ -188,8 +195,9 @@ def validate_config_structure(raw):
         "cpa_sync_enabled", "cpa_sync_use_sudo",
         "proxy_pool_probe_dual_stack", "proxy_pool_persist_health",
         "proxy_pool_subscription_public_only", "proxy_pool_preflight_enabled",
-        "us_consistency_enabled", "lajiao_require_residential",
+        "us_consistency_enabled",
         "captcha_solver_enabled",
+        "quality_auto_probe",
     )
     for key in bool_keys:
         cfg[key] = _require_bool(cfg, key)
@@ -207,9 +215,9 @@ def validate_config_structure(raw):
     cfg["cpa_oidc_request_timeout_sec"] = _require_int(cfg, "cpa_oidc_request_timeout_sec", 3, 120)
     cfg["cpa_oidc_poll_timeout_sec"] = _require_int(cfg, "cpa_oidc_poll_timeout_sec", 3, 120)
     cfg["captcha_solver_timeout_sec"] = _require_int(cfg, "captcha_solver_timeout_sec", 10, 600)
-    cfg["lajiao_num"] = _require_int(cfg, "lajiao_num", 1, 100)
-    cfg["lajiao_sticky_minutes"] = _require_int(cfg, "lajiao_sticky_minutes", 1, 120)
-    cfg["mooproxy_bridge_port"] = _require_int(cfg, "mooproxy_bridge_port", 1, 65535)
+    cfg["novproxy_minutes"] = _require_int(cfg, "novproxy_minutes", 1, 1440)
+    cfg["novproxy_num"] = _require_int(cfg, "novproxy_num", 1, 500)
+    cfg["quality_soft_threshold"] = _require_int(cfg, "quality_soft_threshold", 1, 5000)
     string_keys = tuple(key for key, value in DEFAULT_CONFIG.items() if isinstance(value, str))
     path_keys = {
         "grok2api_local_token_file", "api_reverse_tools", "cpa_auth_dir", "cpa_hotload_dir",

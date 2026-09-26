@@ -7,7 +7,7 @@
 
 做法
 ----
-不额外起计量代理，而是在已有的本地代理桥（mooproxy_bridge）中继路径上
+不额外起计量代理，而是在已有的本地代理桥（proxy_bridge）中继路径上
 累加字节数。桥本来就要转发每一个字节，所以零额外开销、零额外端口。
 
 只记录字节数与连接数，**不记录**目标域名、URL 或代理地址。
@@ -223,6 +223,102 @@ def read_metrics():
         except Exception:
             pass
     return snapshot()
+
+
+def _parse_stamp(value):
+    """解析 "YYYY-MM-DD HH:MM:SS"，失败返回 None。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(text[:19], fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _history_records():
+    """历史批次，按时间从新到旧，附解析后的时间戳。"""
+    records = []
+    for item in read_history():
+        if not isinstance(item, dict):
+            continue
+        record = dict(item)
+        record["_started"] = _parse_stamp(item.get("started_at"))
+        record["_finished"] = _parse_stamp(item.get("finished_at"))
+        records.append(record)
+    return records
+
+
+def summarize(records):
+    """把若干批次记录汇总成一个计量块。"""
+    up = sum(int(r.get("bytes_up") or 0) for r in records)
+    down = sum(int(r.get("bytes_down") or 0) for r in records)
+    return {
+        "batches": len(records),
+        "bytes_up": up,
+        "bytes_down": down,
+        "bytes_total": up + down,
+        "connections": sum(int(r.get("connections") or 0) for r in records),
+        "accounts": sum(int(r.get("accounts") or 0) for r in records),
+    }
+
+
+def totals():
+    """累计总量：历史批次 + 当前批次（若正在跑）。
+
+    注意当前批次同时存在于内存和文件里，历史文件只在批次结束时追加，
+    所以不会重复计数。
+    """
+    with _LOCK:
+        live = dict(_STATE)
+    records = _history_records()
+    result = summarize(records)
+    if live.get("running") or live.get("bytes_up") or live.get("bytes_down"):
+        result["batches"] += 1
+        result["bytes_up"] += int(live.get("bytes_up") or 0)
+        result["bytes_down"] += int(live.get("bytes_down") or 0)
+        result["bytes_total"] += int(live.get("bytes_up") or 0) + int(live.get("bytes_down") or 0)
+        result["connections"] += int(live.get("connections") or 0)
+        result["accounts"] += int(live.get("accounts") or 0)
+    return result
+
+
+def window(hours=24, now=None):
+    """最近 N 小时内的流量。
+
+    批次没有结束时间时（仍在跑）按开始时间归属；跨越窗口边界的批次
+    整批计入，不做按比例摊分 —— 代理流量没有细粒度时间戳，摊分只会
+    制造虚假精度。
+    """
+    try:
+        span = float(hours)
+    except Exception:
+        span = 24.0
+    if span <= 0:
+        span = 24.0
+    current = now or datetime.datetime.now()
+    cutoff = current - datetime.timedelta(hours=span)
+    picked = []
+    for record in _history_records():
+        stamp = record.get("_finished") or record.get("_started")
+        if stamp is not None and stamp >= cutoff:
+            picked.append(record)
+    result = summarize(picked)
+    with _LOCK:
+        live = dict(_STATE)
+    live_stamp = _parse_stamp(live.get("started_at"))
+    if (live.get("running") or live.get("bytes_up") or live.get("bytes_down")) and \
+            live_stamp is not None and live_stamp >= cutoff:
+        result["batches"] += 1
+        result["bytes_up"] += int(live.get("bytes_up") or 0)
+        result["bytes_down"] += int(live.get("bytes_down") or 0)
+        result["bytes_total"] += int(live.get("bytes_up") or 0) + int(live.get("bytes_down") or 0)
+        result["connections"] += int(live.get("connections") or 0)
+        result["accounts"] += int(live.get("accounts") or 0)
+    result["hours"] = span
+    return result
 
 
 def format_bytes(value):

@@ -323,6 +323,55 @@ class WebControlPlaneTests(unittest.TestCase):
         self.assertEqual(len(next_page["entries"]), 1)
         self.assertIn("new-line", next_page["entries"][0]["line"])
 
+    def test_quality_status_endpoint(self):
+        resp = self.client.get("/api/quality/status")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertIn("scanning", data)
+        self.assertIn("summary", data)
+        self.assertIn("results", data)
+
+    def test_quality_scan_endpoint_and_conflict(self):
+        ev_start = threading.Event()
+        ev_allow = threading.Event()
+
+        def fake_probe(record, **kwargs):
+            ev_start.set()
+            ev_allow.wait(2.0)
+            return {"email": "a@b.com", "verdict": "healthy"}
+
+        with patch("quality_probe.load_credentials", return_value=[{"email": "a@b.com", "access_token": "tok"}]), \
+             patch("quality_probe.probe_account", side_effect=fake_probe):
+            resp = self.client.post("/api/quality/scan")
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(ev_start.wait(1.0))
+            # 线程正在 probe 时再次触发，应确定返回 409
+            second = self.client.post("/api/quality/scan")
+            self.assertEqual(second.status_code, 409)
+            ev_allow.set()
+            # 等待后台线程完成，清理状态
+            for _ in range(50):
+                if not self.server._quality_state["running"]:
+                    break
+                time.sleep(0.05)
+
+    def test_proxy_pool_novproxy_defaults(self):
+        with patch("novproxy.generate", return_value=[{"node": "1.2.3.4:7000", "exit_ip": "1.2.3.4"}]) as mock_gen, \
+             patch("novproxy.write_nodes") as mock_write, \
+             patch("proxy_pool.get_manager") as mock_mgr:
+            mock_mgr.return_value.reload_sources.return_value = {"reloaded": True}
+            resp = self.client.post("/api/proxy-pool/novproxy")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["count"], 1)
+            # 验证 mock_gen 接收到的 want 等于默认数量
+            self.assertTrue(mock_gen.called)
+            kwargs = mock_gen.call_args[1]
+            self.assertIn("want", kwargs)
+            self.assertGreaterEqual(kwargs["want"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

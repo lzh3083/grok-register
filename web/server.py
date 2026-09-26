@@ -48,6 +48,21 @@ _job_state = {
     "error": "",
 }
 
+_quality_lock = threading.Lock()
+_quality_state: dict[str, Any] = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "total": 0,
+    "completed": 0,
+    "healthy": 0,
+    "hard": 0,
+    "soft": 0,
+    "risk": 0,
+    "error": 0,
+    "current_email": "",
+}
+
 _log_lock = threading.Lock()
 _log_seq = 0
 _logs = collections.deque(maxlen=LOG_LIMIT)
@@ -175,6 +190,12 @@ def _update_progress(batch: Any) -> None:
 def _run_job(count: int, controller: Any, accounts_file: str) -> None:
     global _controller
     try:
+        import traffic_meter
+        traffic_meter.begin_batch()
+        _append_log("[*] 已开启本批代理流量计量")
+    except Exception:
+        pass
+    try:
         batch = engine.run_registration_common(
             count=count,
             log_callback=_append_log,
@@ -183,11 +204,31 @@ def _run_job(count: int, controller: Any, accounts_file: str) -> None:
             observer=lambda batch, _account, _output: _update_progress(batch),
         )
         _update_progress(batch)
+        if bool(engine.config.get("quality_auto_probe", False)) and int(batch.success_count) > 0:
+            try:
+                _append_log("[quality] 注册完成，自动触发降智检测扫描...")
+                quality_scan()
+            except Exception as q_exc:
+                _append_log("[quality] 自动触发降智检测跳过: %s" % q_exc)
     except Exception as exc:
         with _job_lock:
             _job_state["error"] = str(exc)
         _append_log("[!] WebUI 任务异常: %s" % exc)
     finally:
+        try:
+            import traffic_meter
+            success_count = int(_job_state.get("success") or 0)
+            if success_count:
+                traffic_meter.record_account(success_count)
+            t_data = traffic_meter.finish_batch()
+            _append_log("[*] 本批代理流量: 上行 %s / 下行 %s / 合计 %s (连接数 %s)" % (
+                traffic_meter.format_bytes(t_data.get("bytes_up")),
+                traffic_meter.format_bytes(t_data.get("bytes_down")),
+                traffic_meter.format_bytes(t_data.get("bytes_total")),
+                t_data.get("connections", 0),
+            ))
+        except Exception:
+            pass
         with _job_lock:
             _job_state["running"] = False
             _job_state["finished_at"] = time.time()
@@ -388,6 +429,28 @@ def traffic_status():
     total_accounts = sum(accounts)
     average_account = int(sum(totals) / total_accounts) if total_accounts else 0
 
+    # 累计总量与时间窗口。任何一项失败都不应让整个接口挂掉，
+    # 面板宁可不显示也不能白屏。
+    def _safe(fn, default):
+        try:
+            return fn()
+        except Exception:
+            return dict(default)
+
+    empty = {"batches": 0, "bytes_up": 0, "bytes_down": 0, "bytes_total": 0,
+             "connections": 0, "accounts": 0}
+    lifetime = _safe(traffic_meter.totals, empty)
+    windows = {}
+    for hours in (1, 24, 168):
+        block = _safe(lambda h=hours: traffic_meter.window(h), empty)
+        block["bytes_total_text"] = traffic_meter.format_bytes(block.get("bytes_total"))
+        windows["h%d" % hours] = block
+    for key in ("bytes_up", "bytes_down", "bytes_total"):
+        lifetime.setdefault(key, 0)
+    lifetime["bytes_up_text"] = traffic_meter.format_bytes(lifetime.get("bytes_up"))
+    lifetime["bytes_down_text"] = traffic_meter.format_bytes(lifetime.get("bytes_down"))
+    lifetime["bytes_total_text"] = traffic_meter.format_bytes(lifetime.get("bytes_total"))
+
     return {
         "ok": True,
         "current": {
@@ -400,6 +463,8 @@ def traffic_status():
         "average_batch_text": traffic_meter.format_bytes(average_batch),
         "average_account": average_account,
         "average_account_text": traffic_meter.format_bytes(average_account),
+        "lifetime": lifetime,
+        "windows": windows,
         "history": [
             {
                 **item,
@@ -422,6 +487,17 @@ def cpa_status():
     if not auth_dir.is_absolute():
         auth_dir = (Path(engine.__file__).resolve().parent / auth_dir).resolve()
 
+    res_file = auth_dir / "quality_results.json"
+    quality_map = {}
+    quality_summary = {}
+    if res_file.is_file():
+        try:
+            q_data = json.loads(res_file.read_text(encoding="utf-8"))
+            quality_map = q_data.get("results") or {}
+            quality_summary = q_data.get("summary") or {}
+        except Exception:
+            pass
+
     credentials = []
     for path in sorted(auth_dir.glob("xai-*.json")):
         entry = {"file": path.name, "email": "", "expired": "", "size": 0}
@@ -436,6 +512,14 @@ def cpa_status():
             info = jwt_inspect.inspect_token(data.get("access_token"))
             entry["bfs"] = bool(info.get("bfs"))
             entry["bfs_value"] = info.get("bfs_value")
+            q = quality_map.get(entry["email"])
+            if q:
+                entry["quality"] = {
+                    "verdict": q.get("verdict"),
+                    "reasoning_tokens": q.get("reasoning_tokens", 0),
+                    "content": q.get("content", ""),
+                    "error": q.get("error", ""),
+                }
         except Exception as exc:
             entry["error"] = str(exc)
         credentials.append(entry)
@@ -496,6 +580,9 @@ def cpa_status():
         "failed": failed,
         "sync": sync,
         "bfs_flagged": sum(1 for item in credentials if item.get("bfs")),
+        "quality_summary": quality_summary,
+        "quality_scanning": bool(_quality_state["running"]),
+        "quality_state": dict(_quality_state),
     }
 
 
@@ -516,6 +603,182 @@ def proxy_pool_reload():
         _end_maintenance(kind)
     _append_log("[*] 代理池已重新加载")
     return {"ok": True, **snapshot}
+
+
+@app.post("/api/proxy-pool/novproxy")
+def proxy_pool_novproxy(
+    num: Optional[int] = Query(None, ge=1, le=500),
+    minutes: Optional[int] = Query(None, ge=1, le=1440),
+    region: Optional[str] = Query(None, min_length=2, max_length=8),
+    expect: Optional[str] = Query(None, min_length=2, max_length=8),
+):
+    """从 NovProxy 提取一批住宅节点并写入节点文件。
+
+    提取到的节点会逐个探测真实出口（国家/是否机房），只有通过校验的
+    才入池。num 默认读取 novproxy_num 或 register_count（实现一账号一 IP）。
+    """
+    kind = "proxy_novproxy"
+    _begin_maintenance(kind)
+    try:
+        import novproxy
+        engine.load_config()
+        try:
+            cfg = engine.validate_config_structure(dict(engine.config))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        out_path = str(cfg.get("proxy_pool_file") or "./novproxy_nodes.txt")
+        api_base = str(cfg.get("novproxy_api") or novproxy.DEFAULT_API)
+        actual_num = int(num or cfg.get("novproxy_num") or cfg.get("register_count") or 5)
+        actual_minutes = int(minutes or cfg.get("novproxy_minutes") or 120)
+        actual_region = str(region or cfg.get("novproxy_region") or "US")
+        actual_expect = str(expect or cfg.get("us_consistency_expect_country") or "US")
+        try:
+            nodes = novproxy.generate(
+                api_base, out_path, region=actual_region, want=actual_num,
+                minutes=actual_minutes, expect_country=actual_expect, log=_append_log,
+            )
+            novproxy.write_nodes(out_path, nodes, log=_append_log)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="NovProxy 提取失败: %s" % exc) from exc
+        # 新节点入池后立刻重载，面板马上能看到。
+        try:
+            from proxy_pool import get_manager
+            manager = get_manager(config=cfg, log=_append_log)
+            snapshot = manager.reload_sources(force=True)
+        except Exception:
+            snapshot = {}
+    finally:
+        _end_maintenance(kind)
+    _append_log("[*] NovProxy 已提取 %s 个节点 → %s" % (len(nodes), out_path))
+    return {
+        "ok": True,
+        "count": len(nodes),
+        "out_path": out_path,
+        "nodes": [novproxy.mask_node(n) for n in nodes],
+        **snapshot,
+    }
+
+
+@app.get("/api/quality/status")
+def quality_status():
+    """获取降智检测状态及历史探测汇总。"""
+    cfg = _load_config_if_idle()
+    auth_dir = Path(str(cfg.get("cpa_auth_dir") or "./cpa_auths")).expanduser()
+    if not auth_dir.is_absolute():
+        auth_dir = (Path(engine.__file__).resolve().parent / auth_dir).resolve()
+    res_file = auth_dir / "quality_results.json"
+    summary = {}
+    results = {}
+    updated_at = ""
+    if res_file.is_file():
+        try:
+            q_data = json.loads(res_file.read_text(encoding="utf-8"))
+            summary = q_data.get("summary") or {}
+            results = q_data.get("results") or {}
+            updated_at = str(q_data.get("updated_at") or "")
+        except Exception:
+            pass
+    with _quality_lock:
+        scan_state = dict(_quality_state)
+    return {
+        "ok": True,
+        "scanning": scan_state["running"],
+        "scan_state": scan_state,
+        "summary": summary,
+        "results": results,
+        "updated_at": updated_at,
+    }
+
+
+@app.post("/api/quality/scan")
+def quality_scan():
+    """触发全量 CPA 凭据账号的降智检测后台扫描。"""
+    global _quality_state
+    with _quality_lock:
+        if _quality_state["running"]:
+            raise HTTPException(status_code=409, detail="降智扫描正在进行中，请等待完成")
+        _quality_state.update({
+            "running": True,
+            "started_at": time.time(),
+            "finished_at": None,
+            "total": 0,
+            "completed": 0,
+            "healthy": 0,
+            "hard": 0,
+            "soft": 0,
+            "risk": 0,
+            "error": 0,
+            "current_email": "",
+            "error_msg": "",
+        })
+
+    def _task():
+        import quality_probe as qp
+        try:
+            _append_log("[quality] 开始执行全量账号降智质量扫描...")
+            cfg = _load_config_if_idle()
+            auth_dir = Path(str(cfg.get("cpa_auth_dir") or "./cpa_auths")).expanduser()
+            if not auth_dir.is_absolute():
+                auth_dir = (Path(engine.__file__).resolve().parent / auth_dir).resolve()
+            records = qp.load_credentials(str(auth_dir))
+            with _quality_lock:
+                _quality_state["total"] = len(records)
+            _append_log("[quality] 共发现 %d 个待测凭据" % len(records))
+
+            res_file = auth_dir / "quality_results.json"
+            saved_map = {}
+            if res_file.is_file():
+                try:
+                    saved_map = json.loads(res_file.read_text(encoding="utf-8")).get("results") or {}
+                except Exception:
+                    pass
+
+            results = []
+            soft_thresh = int(cfg.get("quality_soft_threshold") or 50)
+            for idx, rec in enumerate(records, 1):
+                email = rec.get("email") or "?"
+                with _quality_lock:
+                    _quality_state["current_email"] = email
+                _append_log("[%d/%d] 正在探测账号质量: %s ..." % (idx, len(records), email))
+                res = qp.probe_account(rec, timeout=50.0, stream=True, allow_refresh=True)
+                res["verdict"] = qp.classify(res.get("reasoning_tokens", 0), soft_threshold=soft_thresh)
+                res["probed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                results.append(res)
+                saved_map[email] = res
+                with _quality_lock:
+                    _quality_state["completed"] = idx
+                    v = res.get("verdict", "error")
+                    if v in _quality_state:
+                        _quality_state[v] += 1
+                line_desc = qp._format_line(res)
+                _append_log("[quality] %s (耗时 %.1fs)" % (line_desc, res.get("duration_sec", 0)))
+
+            summary = qp.summarize(results)
+            payload = {
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "summary": summary,
+                "results": saved_map,
+            }
+            tmp_file = res_file.with_suffix(".tmp")
+            tmp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_file.replace(res_file)
+            _append_log(
+                "[*] 降智扫描完成！健康: %d, 降智: %d, 可疑: %d, 不可用: %d, 错误: %d"
+                % (summary["healthy"], summary["hard"], summary["soft"], summary["risk"], summary["error"])
+            )
+        except Exception as exc:
+            with _quality_lock:
+                _quality_state["error_msg"] = str(exc)
+            _append_log("[quality] 扫描异常终止: %s" % exc)
+        finally:
+            with _quality_lock:
+                _quality_state["running"] = False
+                _quality_state["finished_at"] = time.time()
+                _quality_state["current_email"] = ""
+
+    thread = threading.Thread(target=_task, name="quality-scan-thread", daemon=True)
+    thread.start()
+    return {"ok": True, "message": "降智扫描已在后台启动"}
 
 
 @app.post("/api/proxy-pool/test")
