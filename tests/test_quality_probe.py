@@ -14,6 +14,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -481,3 +482,58 @@ class StreamResponseTests(unittest.TestCase):
         self.assertEqual(res["reasoning_tokens"], 358)
         self.assertEqual(res["completion_tokens"], 2)
         self.assertEqual(res["total_tokens"], 560)
+
+
+class CpaSamplingTests(unittest.TestCase):
+    """CPA 抽样探测：本地不再持有/刷新凭据，避免 refresh_token 双写吊销。
+
+    实测背景：本地 grok-register 和 Oracle CPA 各存一份凭据副本、都在刷新
+    refresh_token，而 xAI 的 RT 是一次性轮换的 —— 先刷的拿到新 token，
+    后刷的直接 revoked，42 个账号里废了 17 个。
+    """
+
+    def test_probe_via_cpa_passes_result_dict_to_log(self):
+        """回调必须收到结果字典。
+
+        踩过坑：probe_via_cpa 一开始传的是 _format_line(item) 的字符串，
+        而 server 侧回调按字典取值，直接抛 'str' object has no attribute 'get'。
+        """
+        seen = []
+
+        def fake_probe(record, **kwargs):
+            return {"email": record.get("email"), "verdict": qp.VERDICT_HEALTHY,
+                    "reasoning_tokens": 1234, "status": 200, "error": ""}
+
+        with patch.object(qp, "probe_account", side_effect=fake_probe):
+            out = qp.probe_via_cpa("sk-test", samples=3, workers=1, log=seen.append)
+
+        self.assertEqual(len(seen), 3)
+        for item in seen:
+            self.assertIsInstance(item, dict, "回调收到的必须是结果字典，不是格式化字符串")
+            self.assertIn("verdict", item)
+        self.assertEqual(out["summary"]["healthy"], 3)
+        self.assertEqual(out["mode"], "cpa_sampling")
+
+    def test_probe_via_cpa_never_refreshes_credentials(self):
+        """抽样时必须 allow_refresh=False —— 一旦刷新就会和 CPA 抢 RT。"""
+        captured = []
+
+        def fake_probe(record, **kwargs):
+            captured.append(kwargs)
+            return {"email": record.get("email"), "verdict": qp.VERDICT_HEALTHY,
+                    "reasoning_tokens": 900, "status": 200, "error": ""}
+
+        with patch.object(qp, "probe_account", side_effect=fake_probe):
+            qp.probe_via_cpa("sk-test", samples=2, workers=1, log=None)
+
+        self.assertTrue(captured)
+        for kwargs in captured:
+            self.assertFalse(kwargs.get("allow_refresh", True),
+                             "CPA 抽样绝不能刷新本地凭据")
+
+    def test_probe_via_cpa_requires_api_key(self):
+        self.assertIsNone(qp.probe_via_cpa("", samples=1, log=None))
+
+    def test_ensure_tunnel_returns_true_when_port_already_open(self):
+        with patch.object(qp, "_port_open", return_value=True):
+            self.assertTrue(qp.ensure_cpa_tunnel(log=None))

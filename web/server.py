@@ -733,14 +733,10 @@ def quality_scan(only_new: bool = False):
     def _task():
         import quality_probe as qp
         try:
-            mode = "增量（只测新账号）" if only_new else "全量"
-            _append_log("[quality] 开始执行账号降智质量扫描（%s）..." % mode)
             cfg = _load_config_if_idle()
             auth_dir = Path(str(cfg.get("cpa_auth_dir") or "./cpa_auths")).expanduser()
             if not auth_dir.is_absolute():
                 auth_dir = (Path(engine.__file__).resolve().parent / auth_dir).resolve()
-            records = qp.load_credentials(str(auth_dir))
-
             res_file = auth_dir / "quality_results.json"
             saved_map = {}
             if res_file.is_file():
@@ -748,6 +744,16 @@ def quality_scan(only_new: bool = False):
                     saved_map = json.loads(res_file.read_text(encoding="utf-8")).get("results") or {}
                 except Exception:
                     pass
+
+            # 走 CPA 抽样：本地不再持有/刷新 refresh_token，避免和 Oracle CPA
+            # 互相吊销（xAI 的 RT 一次性轮换，两边都刷必然废掉一边）。
+            if bool(cfg.get("quality_probe_via_cpa", True)):
+                _run_cpa_sampling(qp, cfg, auth_dir, res_file, saved_map)
+                return
+
+            mode = "增量（只测新账号）" if only_new else "全量"
+            _append_log("[quality] 开始执行账号降智质量扫描（%s）..." % mode)
+            records = qp.load_credentials(str(auth_dir))
 
             if only_new:
                 before = len(records)
@@ -771,7 +777,9 @@ def quality_scan(only_new: bool = False):
                 with _quality_lock:
                     _quality_state["current_email"] = email
                 _append_log("[%d/%d] 正在探测账号质量: %s ..." % (idx, len(records), email))
-                res = qp.probe_account(rec, timeout=50.0, stream=True, allow_refresh=True)
+                # allow_refresh=False：绝不刷新本地凭据，否则又会和 CPA 抢
+                # refresh_token。过期的直接判为不可用，等 CPA 那边刷新。
+                res = qp.probe_account(rec, timeout=50.0, stream=True, allow_refresh=False)
                 res["verdict"] = qp.classify(res.get("reasoning_tokens", 0), soft_threshold=soft_thresh)
                 res["probed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 results.append(res)
@@ -806,6 +814,74 @@ def quality_scan(only_new: bool = False):
                 _quality_state["running"] = False
                 _quality_state["finished_at"] = time.time()
                 _quality_state["current_email"] = ""
+
+    def _run_cpa_sampling(qp, cfg, auth_dir, res_file, saved_map):
+        """通过 CPA API 抽样探测整体质量，全程不碰凭据。"""
+        import quality_probe as _qp
+
+        key = str(cfg.get("quality_cpa_api_key") or "").strip()
+        if not key:
+            _append_log("[quality] 未配置 CPA API key（quality_cpa_api_key），无法抽样探测")
+            return
+
+        local_port = int(cfg.get("quality_cpa_local_port") or 18317)
+        if not _qp.ensure_cpa_tunnel(
+            target=str(cfg.get("quality_cpa_tunnel") or "oracle-singapore"),
+            local_port=local_port,
+            remote_port=int(cfg.get("quality_cpa_remote_port") or 8317),
+            log=_append_log,
+        ):
+            _append_log("[quality] CPA 隧道不可用，跳过降智抽样")
+            return
+
+        base_url = "http://127.0.0.1:%d/v1" % local_port
+        creds = _qp.load_credentials(str(auth_dir))
+        samples = int(cfg.get("quality_cpa_samples") or 0) or max(1, len(creds))
+        model = str(cfg.get("quality_cpa_model") or "grok-4.7")
+        soft_thresh = int(cfg.get("quality_soft_threshold") or 50)
+
+        _append_log("[quality] 走 CPA 抽样探测（%s，%d 次，模型 %s），不接触本地凭据" % (base_url, samples, model))
+        with _quality_lock:
+            _quality_state["total"] = samples
+
+        done = {"n": 0}
+
+        def _progress(item):
+            done["n"] += 1
+            with _quality_lock:
+                _quality_state["completed"] = done["n"]
+                _quality_state["current_email"] = item.get("email") or ""
+                v = item.get("verdict", "error")
+                if v in _quality_state:
+                    _quality_state[v] += 1
+            _append_log("[quality] %s" % _qp._format_line(item))
+
+        out = _qp.probe_via_cpa(
+            key, base_url=base_url, samples=samples, model=model,
+            timeout=240.0, workers=1, log=_progress, soft_threshold=soft_thresh,
+        )
+        if not out:
+            _append_log("[quality] CPA 抽样探测没有拿到任何样本")
+            return
+
+        summary = out["summary"]
+        payload = {
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "mode": "cpa_sampling",
+            "cpa_target": out.get("target", ""),
+            "cpa_model": model,
+            "cpa_summary": summary,
+            "cpa_samples": out["samples"],
+            # 保留历史逐账号结果，抽样模式不覆盖它们
+            "results": saved_map,
+        }
+        tmp_file = res_file.with_suffix(".tmp")
+        tmp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_file.replace(res_file)
+        _append_log(
+            "[*] CPA 抽样完成！健康: %d, 降智: %d, 可疑: %d, 不可用: %d, 错误: %d"
+            % (summary["healthy"], summary["hard"], summary["soft"], summary["risk"], summary["error"])
+        )
 
     thread = threading.Thread(target=_task, name="quality-scan-thread", daemon=True)
     thread.start()

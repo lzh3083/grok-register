@@ -411,7 +411,7 @@ class WebControlPlaneTests(unittest.TestCase):
             with patch("quality_probe.load_credentials", return_value=records), \
                  patch("quality_probe.probe_account", side_effect=fake_probe), \
                  patch.object(self.server, "_load_config_if_idle",
-                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50}):
+                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50, "quality_probe_via_cpa": False}):
                 resp = self.client.post("/api/quality/scan?only_new=true")
                 self.assertEqual(resp.status_code, 200)
                 for _ in range(60):
@@ -436,7 +436,7 @@ class WebControlPlaneTests(unittest.TestCase):
             with patch("quality_probe.load_credentials", return_value=records), \
                  patch("quality_probe.probe_account", side_effect=lambda *a, **k: probed.append(1)), \
                  patch.object(self.server, "_load_config_if_idle",
-                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50}):
+                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50, "quality_probe_via_cpa": False}):
                 resp = self.client.post("/api/quality/scan?only_new=true")
                 self.assertEqual(resp.status_code, 200)
                 for _ in range(60):
@@ -465,7 +465,7 @@ class WebControlPlaneTests(unittest.TestCase):
             with patch("quality_probe.load_credentials", return_value=records), \
                  patch("quality_probe.probe_account", side_effect=fake_probe), \
                  patch.object(self.server, "_load_config_if_idle",
-                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50}):
+                              return_value={"cpa_auth_dir": tmp, "quality_soft_threshold": 50, "quality_probe_via_cpa": False}):
                 resp = self.client.post("/api/quality/scan")
                 self.assertEqual(resp.status_code, 200)
                 for _ in range(60):

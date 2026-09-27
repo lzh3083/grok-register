@@ -444,3 +444,117 @@ def summarize(results):
         elif verdict == VERDICT_RISK:
             summary["risk_emails"].append(item.get("email"))
     return summary
+
+
+# ---------------------------------------------------------------------------
+# CPA 抽样探测：完全不接触凭据，从根上避免 refresh_token 双写吊销
+# ---------------------------------------------------------------------------
+
+DEFAULT_CPA_TUNNEL = "oracle-singapore"
+DEFAULT_CPA_LOCAL_PORT = 18317
+DEFAULT_CPA_REMOTE_PORT = 8317
+DEFAULT_CPA_MODEL = "grok-4.7"
+
+
+def _port_open(host, port, timeout=1.0):
+    import socket
+
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def ensure_cpa_tunnel(target=DEFAULT_CPA_TUNNEL, local_port=DEFAULT_CPA_LOCAL_PORT,
+                      remote_port=DEFAULT_CPA_REMOTE_PORT, log=_log):
+    """确保到 Oracle CPA 的 SSH 隧道可用，已通则直接返回 True。
+
+    为什么需要隧道：CPA 只监听 127.0.0.1:8317，本地直连会被拒
+    （实测 RemoteDisconnected / curl 52 Empty reply from server）。
+    """
+    if _port_open("127.0.0.1", local_port):
+        return True
+    import subprocess
+
+    command = [
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=15", "-N",
+        "-L", "%d:127.0.0.1:%d" % (int(local_port), int(remote_port)),
+        str(target),
+    ]
+    try:
+        subprocess.Popen(
+            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    except Exception as exc:
+        if log:
+            log("[quality] 建立 CPA 隧道失败: %s" % exc)
+        return False
+    for _ in range(30):
+        time.sleep(0.5)
+        if _port_open("127.0.0.1", local_port):
+            if log:
+                log("[quality] CPA 隧道就绪: 127.0.0.1:%d -> %s:%d"
+                    % (int(local_port), target, int(remote_port)))
+            return True
+    if log:
+        log("[quality] CPA 隧道 15 秒内未就绪（SSH 目标: %s）" % target)
+    return False
+
+
+def probe_via_cpa(api_key, base_url="http://127.0.0.1:18317/v1", samples=10,
+                  model=DEFAULT_CPA_MODEL, prompt=DEFAULT_PROMPT, timeout=240.0,
+                  workers=1, log=_log, soft_threshold=SOFT_REASONING_TOKENS):
+    """通过 CPA API 抽样探测账号质量，全程不接触凭据。
+
+    为什么改成走 CPA：本地和 Oracle CPA 各自持有一份凭据副本、都在刷新
+    refresh_token，而 xAI 的 RT 是一次性轮换的 —— 先刷的拿到新 token，
+    后刷的直接 revoked。实测 42 个账号里有 17 个（40%）就是这么废掉的。
+    走 CPA API 之后刷新者只剩 CPA 一个，从根上消除冲突。
+
+    代价：CPA 会随机挑账号，所以拿到的只有整体质量分布，没有逐账号明细。
+
+    返回 {"samples": [...], "summary": {...}}；探测本身失败返回 None。
+    """
+    key = str(api_key or "").strip()
+    if not key:
+        if log:
+            log("[quality] 未配置 CPA API key，无法抽样探测")
+        return None
+    target = _chat_url(base_url)
+    count = max(1, int(samples or 1))
+    results = [None] * count
+
+    def run(index):
+        record = {"email": "cpa-sample-%02d" % (index + 1), "access_token": key}
+        # allow_refresh=False 是关键：绝不刷新，绝不让本地再碰 refresh_token。
+        return index, probe_account(
+            record, model=model, prompt=prompt, timeout=timeout,
+            base_url=base_url, allow_refresh=False,
+        )
+
+    if workers <= 1 or count <= 1:
+        for index in range(count):
+            _, item = run(index)
+            results[index] = item
+            if log:
+                log(item)
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+            futures = [pool.submit(run, i) for i in range(count)]
+            for future in as_completed(futures):
+                try:
+                    index, item = future.result()
+                except Exception:
+                    continue
+                results[index] = item
+                if log:
+                    log(item)
+
+    items = [r for r in results if r is not None]
+    if not items:
+        return None
+    return {"samples": items, "summary": summarize(items), "mode": "cpa_sampling", "target": target}
+

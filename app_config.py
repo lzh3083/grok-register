@@ -130,6 +130,21 @@ DEFAULT_CONFIG = {
     # 打开 grok.com/imagine 并提交一次生成，很费住宅代理流量，而结论基本
     # 是固定的（免费账号网页端界面可用、API 端一律 403 需要订阅）。
     "check_imagine_capability": False,
+    # 降智扫描是否改走 CPA API 抽样。默认开启：本地和 Oracle CPA 各自持有
+    # 一份凭据副本、都在刷新 refresh_token，而 xAI 的 RT 是一次性轮换的，
+    # 先刷的拿到新 token、后刷的直接 revoked（实测 42 个账号废了 17 个）。
+    # 走 CPA 之后刷新者只剩 CPA 一个，从根上消除冲突；代价是只能拿到整体
+    # 质量分布，没有逐账号明细。
+    "quality_probe_via_cpa": True,
+    # SSH 隧道目标：CPA 只监听 127.0.0.1:8317，本地必须经隧道访问。
+    "quality_cpa_tunnel": "oracle-singapore",
+    "quality_cpa_local_port": 18317,
+    "quality_cpa_remote_port": 8317,
+    # CPA 的 API key（config.json 权限 0600）。
+    "quality_cpa_api_key": "",
+    # 抽样次数；0 表示按本地凭据数量自动取值。
+    "quality_cpa_samples": 0,
+    "quality_cpa_model": "grok-4.7",
     # Chromium 可执行文件路径。留空则按环境变量与常见安装位置自动探测；
     # 容器/服务器上浏览器常装在非标准目录，此时需显式指定。
     "browser_path": "",
