@@ -35,7 +35,18 @@ from pathlib import Path
 
 TRAFFIC_FILE_ENV = "GROK_BATCH_TRAFFIC_FILE"
 HISTORY_FILE_ENV = "GROK_BATCH_TRAFFIC_HISTORY_FILE"
+CALIBRATION_ENV = "GROK_BATCH_TRAFFIC_FACTOR"
 HISTORY_LIMIT = 200
+
+# 本地计量只覆盖「浏览器 ↔ 本地代理桥」这一段，实测约为 NovProxy 面板
+# 实际扣量的 60%，所以面板必须给一个校准后的预估值。
+#
+# 实测依据（两次独立实验）：
+#   5 账号批次: 本地 93.23 MB / 面板扣 143 MB (0.57→0.43GB) = 1.53x
+#   单账号验证: 本地 22.81 MB / 面板扣 ~39 MB (0.43→0.39GB) = 1.71x
+# 单账号那次总量小、面板只跳了 0.04GB，误差被放大；1.53x 读数跨度大更可信。
+# 取 1.6 作为默认系数，落在两次实测区间内。
+DEFAULT_CALIBRATION = 1.6
 
 _LOCK = threading.RLock()
 _STATE = {
@@ -86,6 +97,30 @@ def _traffic_path():
 def _history_path():
     value = str(os.environ.get(HISTORY_FILE_ENV) or "").strip()
     return Path(value) if value else None
+
+
+def calibration_factor():
+    """本地计量 → 面板实际扣量的经验倍率。
+
+    环境变量没设或值非法时回退到 DEFAULT_CALIBRATION，绝不返回 0 或负数
+    （否则预估用量会恒为 0，面板会误导用户以为不花钱）。
+    """
+    raw = str(os.environ.get(CALIBRATION_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_CALIBRATION
+    try:
+        value = float(raw)
+    except Exception:
+        return DEFAULT_CALIBRATION
+    return value if value > 0 else DEFAULT_CALIBRATION
+
+
+def estimate_bytes(value):
+    """把本地字节数换算成预估的实际扣量。"""
+    try:
+        return int(int(value or 0) * calibration_factor())
+    except Exception:
+        return 0
 
 
 def _write_json(path, payload):

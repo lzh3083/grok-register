@@ -82,6 +82,10 @@ DEFAULT_CONFIG = {
     # 面板直接展示本批用量与历史均值。留空则仅内存计数、不落盘。
     "traffic_file": "./logs/traffic.json",
     "traffic_history_file": "./logs/traffic_history.json",
+    # 本地计量只覆盖「浏览器 ↔ 本地代理桥」，实测约为 NovProxy 面板实际
+    # 扣量的 60%，所以面板用这个系数换算预估用量。两次实测: 1.53x / 1.71x，
+    # 取 1.6。填 1.0 即关闭校准、只看原始读数。
+    "traffic_calibration_factor": 1.6,
     "cpa_base_url": "https://cli-chat-proxy.grok.com/v1",
     "cpa_proxy": "",
     "cpa_headless": False,
@@ -364,6 +368,13 @@ def _apply_traffic_env(cfg):
         if not path.is_absolute():
             path = (Path(__file__).resolve().parent / path).resolve()
         os.environ[env_key] = str(path)
+
+    # 校准系数是纯数字，不做路径解析。
+    factor = str(cfg.get("traffic_calibration_factor") or "").strip()
+    if factor:
+        os.environ["GROK_BATCH_TRAFFIC_FACTOR"] = factor
+    else:
+        os.environ.pop("GROK_BATCH_TRAFFIC_FACTOR", None)
 
 
 def validate_config(raw):

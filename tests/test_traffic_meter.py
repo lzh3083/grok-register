@@ -230,3 +230,50 @@ class TrafficMeterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CalibrationFactorTests(unittest.TestCase):
+    """本地计量 → 面板实际扣量的校准系数。
+
+    实测背景：本地桥只覆盖「浏览器 ↔ 本地代理桥」这一段，约为 NovProxy
+    面板实际扣量的 60%。两次独立实验: 5 账号批次 93.23MB→143MB (1.53x)、
+    单账号 22.81MB→~39MB (1.71x)。
+    """
+
+    def setUp(self):
+        self._saved = os.environ.get(traffic_meter.CALIBRATION_ENV)
+        os.environ.pop(traffic_meter.CALIBRATION_ENV, None)
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop(traffic_meter.CALIBRATION_ENV, None)
+        else:
+            os.environ[traffic_meter.CALIBRATION_ENV] = self._saved
+
+    def test_default_factor_is_measured_value(self):
+        self.assertAlmostEqual(traffic_meter.calibration_factor(),
+                               traffic_meter.DEFAULT_CALIBRATION)
+        self.assertAlmostEqual(traffic_meter.DEFAULT_CALIBRATION, 1.6)
+
+    def test_env_overrides_factor(self):
+        os.environ[traffic_meter.CALIBRATION_ENV] = "1.53"
+        self.assertAlmostEqual(traffic_meter.calibration_factor(), 1.53)
+
+    def test_invalid_factor_falls_back(self):
+        """0/负数/非数字都必须回退 —— 否则预估用量恒为 0，面板会误导用户。"""
+        for bad in ("0", "-2", "abc", "", "  "):
+            os.environ[traffic_meter.CALIBRATION_ENV] = bad
+            self.assertAlmostEqual(traffic_meter.calibration_factor(),
+                                   traffic_meter.DEFAULT_CALIBRATION,
+                                   msg="非法值 %r 应回退到默认" % bad)
+
+    def test_estimate_bytes_scales(self):
+        os.environ[traffic_meter.CALIBRATION_ENV] = "2"
+        self.assertEqual(traffic_meter.estimate_bytes(1000), 2000)
+        self.assertEqual(traffic_meter.estimate_bytes(0), 0)
+        self.assertEqual(traffic_meter.estimate_bytes(None), 0)
+
+    def test_factor_one_is_identity(self):
+        """系数填 1 即关闭校准，预估值等于原始读数。"""
+        os.environ[traffic_meter.CALIBRATION_ENV] = "1"
+        self.assertEqual(traffic_meter.estimate_bytes(12345), 12345)

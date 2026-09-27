@@ -43,6 +43,7 @@
     ['quality_cpa_api_key','text'],
     ['quality_cpa_samples','number',{min:0,max:5000}],
     ['quality_cpa_model','text'],
+    ['traffic_calibration_factor','number',{min:1,max:10,step:0.1}],
     ['browser_path','text','full'],
     ['cloudflare_fixed_address','text','full'],
     ['cloudflare_fixed_jwt','text','full'],
@@ -56,6 +57,7 @@
     cpaSyncOk:'目标可达', cpaSyncFail:'目标不可达', cpaFailed:'导出失败', cpaCount:'个凭据',
     qualityScan:'降智扫描(仅新账号)', qualityFullScan:'降智全量重扫', qualityScanning:'扫描中...', cpaQuality:'降智检测',
     trafficTitle:'代理流量计量', trafficRefresh:'刷新', trafficStarted:'开始时间',
+    trafficCurrent:'本批', trafficRaw:'本地读数', trafficEstimated:'预估实际', trafficFactor:'校准系数',
     trafficUp:'上行', trafficDown:'下行', trafficTotal:'合计', trafficAccounts:'成功账号',
     trafficNone:'暂无流量记录', trafficAvgBatch:'历史批次均值', trafficAvgAccount:'每账号均值',
     trafficLifetime:'历史总用量', trafficWindow1h:'近1h', trafficWindow24h:'近24h', trafficWindow7d:'近7d',
@@ -78,6 +80,7 @@
     cpaSyncOk:'target reachable', cpaSyncFail:'target unreachable', cpaFailed:'Export failed', cpaCount:'files',
     qualityScan:'Probe New Only', qualityFullScan:'Probe All (Full)', qualityScanning:'Probing...', cpaQuality:'Quality',
     trafficTitle:'Proxy Traffic Meter', trafficRefresh:'Refresh', trafficStarted:'Started',
+    trafficCurrent:'This batch', trafficRaw:'local raw', trafficEstimated:'est. actual', trafficFactor:'Calibration',
     trafficUp:'Up', trafficDown:'Down', trafficTotal:'Total', trafficAccounts:'Accounts',
     trafficNone:'No traffic recorded', trafficAvgBatch:'Avg per batch', trafficAvgAccount:'Avg per account',
     trafficLifetime:'Lifetime Total', trafficWindow1h:'Past 1h', trafficWindow24h:'Past 24h', trafficWindow7d:'Past 7d',
@@ -135,6 +138,7 @@
     quality_cpa_api_key:['CPA API Key','CPA 的 api-keys 之一。'],
     quality_cpa_samples:['CPA 抽样次数','0 表示按本地凭据数量自动取值。'],
     quality_cpa_model:['CPA 抽样模型','默认 grok-4.7。'],
+    traffic_calibration_factor:['流量校准系数','本地计量 ÷ 实际扣量 的经验倍率，实测 1.53~1.71，默认 1.6。填 1 只看原始读数。'],
     browser_path:['Chromium 路径','留空自动探测（读 GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH 环境变量及常见安装位置）。容器内浏览器装在非标准目录时必须显式指定。'],
     cloudflare_fixed_address:['固定邮箱地址','留空则每个账号自动新建地址。填写后复用该地址，适用于实例已关闭建址的场景。'],
     cloudflare_fixed_jwt:['固定邮箱 JWT','与固定邮箱地址配套的地址级凭证（网页链接里 ?jwt= 后面那串）。'],
@@ -181,6 +185,7 @@
     quality_cpa_api_key:['CPA API Key','One of the CPA api-keys.'],
     quality_cpa_samples:['CPA sample count','0 = derive from local credential count.'],
     quality_cpa_model:['CPA sample model','Default grok-4.7.'],
+    traffic_calibration_factor:['Traffic calibration','Empirical local-vs-actual ratio (measured 1.53-1.71, default 1.6). Set 1 to show raw only.'],
     browser_path:['Chromium path','Leave empty to auto-detect (via GROK_BROWSER_PATH / PLAYWRIGHT_BROWSERS_PATH and common install locations). Required when the browser lives outside standard paths, e.g. inside a container.'],
     cloudflare_fixed_address:['Fixed mail address','Leave empty to create a fresh address per account. Set it to reuse one address, e.g. when address creation is disabled on the instance.'],
     cloudflare_fixed_jwt:['Fixed mail JWT','Address-level credential paired with the fixed address (the ?jwt= value in the web UI URL).'],
@@ -280,6 +285,7 @@
       <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
         <th data-i18n="trafficStarted">${t('trafficStarted')}</th><th data-i18n="trafficUp">${t('trafficUp')}</th>
         <th data-i18n="trafficDown">${t('trafficDown')}</th><th data-i18n="trafficTotal">${t('trafficTotal')}</th>
+        <th data-i18n="trafficEstimated">${t('trafficEstimated')}</th>
         <th data-i18n="trafficAccounts">${t('trafficAccounts')}</th>
       </tr></thead><tbody id="trafficRows"></tbody></table></div>`;
     proxySection.appendChild(trafficShell);
@@ -466,21 +472,34 @@
     const life = data.lifetime || {};
     const win = data.windows || {};
     const parts = [];
-    parts.push(`本批: ${cur.bytes_total_text || '0 B'} (↑${formatBytes(cur.bytes_up)} · ↓${formatBytes(cur.bytes_down)})`);
+    // 本地读数只覆盖「浏览器 ↔ 本地代理桥」，实测约为面板实际扣量的 60%，
+    // 所以主显预估值、把原始读数放在括号里备查。
+    const curEst = cur.estimated_bytes_total_text;
+    const curRaw = cur.bytes_total_text || '0 B';
+    parts.push(`${t('trafficCurrent')}: ${curEst || curRaw}${curEst && curEst !== curRaw ? ` (${t('trafficRaw')} ${curRaw})` : ''} (↑${formatBytes(cur.bytes_up)} · ↓${formatBytes(cur.bytes_down)})`);
     if (life && (life.bytes_total || life.bytes_total_text)) {
-      parts.push(`${t('trafficLifetime')}: ${life.bytes_total_text || formatBytes(life.bytes_total)}`);
+      const lifeEst = life.estimated_bytes_total_text;
+      const lifeRaw = life.bytes_total_text || formatBytes(life.bytes_total);
+      parts.push(`${t('trafficLifetime')}: ${lifeEst || lifeRaw}${lifeEst && lifeEst !== lifeRaw ? ` (${t('trafficRaw')} ${lifeRaw})` : ''}`);
     }
     const winParts = [];
     if (win.h1 && win.h1.bytes_total) winParts.push(`${t('trafficWindow1h')}: ${win.h1.bytes_total_text}`);
     if (win.h24 && win.h24.bytes_total) winParts.push(`${t('trafficWindow24h')}: ${win.h24.bytes_total_text}`);
     if (win.h168 && win.h168.bytes_total) winParts.push(`${t('trafficWindow7d')}: ${win.h168.bytes_total_text}`);
     if (winParts.length) parts.push(winParts.join(' · '));
-    if (data.average_batch) parts.push(`${t('trafficAvgBatch')}: ${data.average_batch_text}`);
-    if (data.average_account) parts.push(`${t('trafficAvgAccount')}: ${data.average_account_text}`);
+    if (data.average_batch) {
+      parts.push(`${t('trafficAvgBatch')}: ${data.estimated_average_batch_text || data.average_batch_text}`);
+    }
+    if (data.average_account) {
+      parts.push(`${t('trafficAvgAccount')}: ${data.estimated_average_account_text || data.average_account_text}`);
+    }
+    if (data.calibration_factor && Number(data.calibration_factor) !== 1) {
+      parts.push(`${t('trafficFactor')} ×${data.calibration_factor}`);
+    }
     summary.textContent = parts.join(' | ');
     const history = Array.isArray(data.history) ? data.history : [];
     if (!history.length) {
-      rows.innerHTML = `<tr><td colspan="5" class="proxy-empty">${esc(t('trafficNone'))}</td></tr>`;
+      rows.innerHTML = `<tr><td colspan="6" class="proxy-empty">${esc(t('trafficNone'))}</td></tr>`;
       return;
     }
     rows.innerHTML = history.map(item => `<tr>
@@ -488,6 +507,7 @@
       <td>${esc(formatBytes(item.bytes_up))}</td>
       <td>${esc(formatBytes(item.bytes_down))}</td>
       <td>${esc(item.bytes_total_text || '—')}</td>
+      <td>${esc(item.estimated_bytes_total_text || '—')}</td>
       <td>${esc(item.accounts == null ? '—' : item.accounts)}</td>
     </tr>`).join('');
   }

@@ -494,3 +494,47 @@ class WebControlPlaneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrafficCalibrationApiTests(unittest.TestCase):
+    """/api/traffic 必须同时给出原始读数与校准后的预估用量。
+
+    本地桥只覆盖「浏览器 ↔ 本地代理桥」，实测约为面板实际扣量的 60%，
+    所以面板主显预估值、原始值保留备查。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from web import server
+
+        cls.server = server
+        cls.client = TestClient(server.app)
+
+    def test_traffic_status_exposes_estimate(self):
+        import traffic_meter
+
+        client = self.client
+        with patch.object(traffic_meter, "read_metrics", return_value={
+                "running": True, "started_at": "x", "finished_at": None,
+                "bytes_up": 1000, "bytes_down": 2000, "bytes_total": 3000,
+                "connections": 5, "accounts": 1, "archived": False}), \
+             patch.object(traffic_meter, "read_history", return_value=[
+                 {"started_at": "a", "finished_at": "b", "bytes_up": 10, "bytes_down": 20,
+                  "bytes_total": 30, "connections": 1, "accounts": 1}]), \
+             patch.object(traffic_meter, "totals", return_value={
+                 "batches": 1, "bytes_up": 10, "bytes_down": 20, "bytes_total": 30,
+                 "connections": 1, "accounts": 1}), \
+             patch.object(traffic_meter, "window", return_value={
+                 "batches": 1, "bytes_up": 10, "bytes_down": 20, "bytes_total": 30,
+                 "connections": 1, "accounts": 1}):
+            resp = client.get("/api/traffic")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        factor = data["calibration_factor"]
+        self.assertGreater(factor, 1.0)
+        self.assertEqual(data["current"]["estimated_bytes_total"], int(3000 * factor))
+        self.assertEqual(data["lifetime"]["estimated_bytes_total"], int(30 * factor))
+        self.assertIn("estimated_bytes_total_text", data["current"])
+        self.assertIn("estimated_average_account_text", data)
+        self.assertIn("estimated_bytes_total_text", data["history"][0])

@@ -464,8 +464,20 @@ def traffic_status():
     lifetime["bytes_down_text"] = traffic_meter.format_bytes(lifetime.get("bytes_down"))
     lifetime["bytes_total_text"] = traffic_meter.format_bytes(lifetime.get("bytes_total"))
 
+    # 本地计量只覆盖「浏览器 ↔ 本地代理桥」，实测约为面板实际扣量的 60%。
+    # 这里把校准后的预估用量一并给出：原始值保留（用于和代码侧对账），
+    # 预估值为准（用于对着 NovProxy 余额做预算）。
+    factor = traffic_meter.calibration_factor()
+    for block in (current, lifetime):
+        estimated = traffic_meter.estimate_bytes(block.get("bytes_total"))
+        block["estimated_bytes_total"] = estimated
+        block["estimated_bytes_total_text"] = traffic_meter.format_bytes(estimated)
+    estimated_batch = traffic_meter.estimate_bytes(average_batch)
+    estimated_account = traffic_meter.estimate_bytes(average_account)
+
     return {
         "ok": True,
+        "calibration_factor": factor,
         "current": {
             **current,
             "bytes_up_text": traffic_meter.format_bytes(current.get("bytes_up")),
@@ -476,12 +488,19 @@ def traffic_status():
         "average_batch_text": traffic_meter.format_bytes(average_batch),
         "average_account": average_account,
         "average_account_text": traffic_meter.format_bytes(average_account),
+        "estimated_average_batch": estimated_batch,
+        "estimated_average_batch_text": traffic_meter.format_bytes(estimated_batch),
+        "estimated_average_account": estimated_account,
+        "estimated_average_account_text": traffic_meter.format_bytes(estimated_account),
         "lifetime": lifetime,
         "windows": windows,
         "history": [
             {
                 **item,
                 "bytes_total_text": traffic_meter.format_bytes(item.get("bytes_total")),
+                "estimated_bytes_total_text": traffic_meter.format_bytes(
+                    traffic_meter.estimate_bytes(item.get("bytes_total"))
+                ),
             }
             for item in history[:20]
         ],
