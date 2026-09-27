@@ -82,10 +82,14 @@ DEFAULT_CONFIG = {
     # 面板直接展示本批用量与历史均值。留空则仅内存计数、不落盘。
     "traffic_file": "./logs/traffic.json",
     "traffic_history_file": "./logs/traffic_history.json",
-    # 本地计量只覆盖「浏览器 ↔ 本地代理桥」，实测约为 NovProxy 面板实际
-    # 扣量的 60%，所以面板用这个系数换算预估用量。两次实测: 1.53x / 1.71x，
-    # 取 1.6。填 1.0 即关闭校准、只看原始读数。
-    "traffic_calibration_factor": 1.6,
+    # 流量校准系数：本地计量 → 面板实际扣量 的倍率。默认 1.0 = 不做校准，
+    # 面板只显示本地桥的实际统计值。
+    #
+    # 曾经默认 1.6：本地桥只覆盖「浏览器 ↔ 本地代理桥」，两次实测发现
+    # NovProxy 面板扣量约为本地读数的 1.53x / 1.71x。但厂商计费可能存在
+    # 多倍率（按 IP 段/地区/时段），固定系数并不靠谱，故回到原始读数。
+    # 需要时填实测倍率即可启用校准。
+    "traffic_calibration_factor": 1.0,
     "cpa_base_url": "https://cli-chat-proxy.grok.com/v1",
     "cpa_proxy": "",
     "cpa_headless": False,

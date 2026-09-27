@@ -250,10 +250,14 @@ class CalibrationFactorTests(unittest.TestCase):
         else:
             os.environ[traffic_meter.CALIBRATION_ENV] = self._saved
 
-    def test_default_factor_is_measured_value(self):
-        self.assertAlmostEqual(traffic_meter.calibration_factor(),
-                               traffic_meter.DEFAULT_CALIBRATION)
-        self.assertAlmostEqual(traffic_meter.DEFAULT_CALIBRATION, 1.6)
+    def test_default_is_no_calibration(self):
+        """默认不做校准：面板只显示本地实际统计值。
+
+        曾默认 1.6（本地读数约为面板扣量的 60%），但厂商计费可能有多倍率，
+        固定系数不可靠，故回到原始读数。
+        """
+        self.assertAlmostEqual(traffic_meter.calibration_factor(), 1.0)
+        self.assertAlmostEqual(traffic_meter.DEFAULT_CALIBRATION, 1.0)
 
     def test_env_overrides_factor(self):
         os.environ[traffic_meter.CALIBRATION_ENV] = "1.53"
@@ -274,6 +278,10 @@ class CalibrationFactorTests(unittest.TestCase):
         self.assertEqual(traffic_meter.estimate_bytes(None), 0)
 
     def test_factor_one_is_identity(self):
-        """系数填 1 即关闭校准，预估值等于原始读数。"""
-        os.environ[traffic_meter.CALIBRATION_ENV] = "1"
+        """系数为 1（默认）时预估值等于原始读数。"""
         self.assertEqual(traffic_meter.estimate_bytes(12345), 12345)
+
+    def test_measured_factor_can_be_enabled(self):
+        """需要时仍可填入实测倍率启用校准（实测区间 1.53~1.71）。"""
+        os.environ[traffic_meter.CALIBRATION_ENV] = "1.53"
+        self.assertEqual(traffic_meter.estimate_bytes(100000), 153000)

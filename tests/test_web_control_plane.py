@@ -532,7 +532,7 @@ class TrafficCalibrationApiTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         factor = data["calibration_factor"]
-        self.assertGreater(factor, 1.0)
+        self.assertGreaterEqual(factor, 1.0)
         self.assertEqual(data["current"]["estimated_bytes_total"], int(3000 * factor))
         self.assertEqual(data["lifetime"]["estimated_bytes_total"], int(30 * factor))
         self.assertIn("estimated_bytes_total_text", data["current"])

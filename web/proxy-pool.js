@@ -285,7 +285,7 @@
       <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
         <th data-i18n="trafficStarted">${t('trafficStarted')}</th><th data-i18n="trafficUp">${t('trafficUp')}</th>
         <th data-i18n="trafficDown">${t('trafficDown')}</th><th data-i18n="trafficTotal">${t('trafficTotal')}</th>
-        <th data-i18n="trafficEstimated">${t('trafficEstimated')}</th>
+        <th data-i18n="trafficEstimated" id="trafficEstHeader">${t('trafficEstimated')}</th>
         <th data-i18n="trafficAccounts">${t('trafficAccounts')}</th>
       </tr></thead><tbody id="trafficRows"></tbody></table></div>`;
     proxySection.appendChild(trafficShell);
@@ -497,9 +497,13 @@
       parts.push(`${t('trafficFactor')} ×${data.calibration_factor}`);
     }
     summary.textContent = parts.join(' | ');
+    // 系数为 1 时预估值恒等于原始读数，该列没有信息量，直接隐藏。
+    const calibrated = Number(data.calibration_factor || 1) !== 1;
+    const estHeader = document.getElementById('trafficEstHeader');
+    if (estHeader) estHeader.style.display = calibrated ? '' : 'none';
     const history = Array.isArray(data.history) ? data.history : [];
     if (!history.length) {
-      rows.innerHTML = `<tr><td colspan="6" class="proxy-empty">${esc(t('trafficNone'))}</td></tr>`;
+      rows.innerHTML = `<tr><td colspan="${calibrated ? 6 : 5}" class="proxy-empty">${esc(t('trafficNone'))}</td></tr>`;
       return;
     }
     rows.innerHTML = history.map(item => `<tr>
@@ -507,7 +511,7 @@
       <td>${esc(formatBytes(item.bytes_up))}</td>
       <td>${esc(formatBytes(item.bytes_down))}</td>
       <td>${esc(item.bytes_total_text || '—')}</td>
-      <td>${esc(item.estimated_bytes_total_text || '—')}</td>
+      ${calibrated ? `<td>${esc(item.estimated_bytes_total_text || '—')}</td>` : ''}
       <td>${esc(item.accounts == null ? '—' : item.accounts)}</td>
     </tr>`).join('');
   }

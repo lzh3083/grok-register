@@ -38,15 +38,13 @@ HISTORY_FILE_ENV = "GROK_BATCH_TRAFFIC_HISTORY_FILE"
 CALIBRATION_ENV = "GROK_BATCH_TRAFFIC_FACTOR"
 HISTORY_LIMIT = 200
 
-# 本地计量只覆盖「浏览器 ↔ 本地代理桥」这一段，实测约为 NovProxy 面板
-# 实际扣量的 60%，所以面板必须给一个校准后的预估值。
-#
-# 实测依据（两次独立实验）：
+# 本地计量只覆盖「浏览器 ↔ 本地代理桥」这一段。曾怀疑它系统性低于 NovProxy
+# 面板扣量，两次实测确实如此：
 #   5 账号批次: 本地 93.23 MB / 面板扣 143 MB (0.57→0.43GB) = 1.53x
 #   单账号验证: 本地 22.81 MB / 面板扣 ~39 MB (0.43→0.39GB) = 1.71x
-# 单账号那次总量小、面板只跳了 0.04GB，误差被放大；1.53x 读数跨度大更可信。
-# 取 1.6 作为默认系数，落在两次实测区间内。
-DEFAULT_CALIBRATION = 1.6
+# 但厂商计费可能存在多倍率（按 IP 段/地区/时段），固定系数不可靠，因此默认
+# 不做校准，面板只显示本地实际统计值。需要时用配置项填实测倍率。
+DEFAULT_CALIBRATION = 1.0
 
 _LOCK = threading.RLock()
 _STATE = {
