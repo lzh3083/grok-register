@@ -40,13 +40,13 @@
     ['quality_cpa_tunnel','text'],
     ['quality_cpa_local_port','number',{min:1,max:65535}],
     ['quality_cpa_remote_port','number',{min:1,max:65535}],
-    ['quality_cpa_api_key','text'],
+    ['quality_cpa_api_key','password'],
     ['quality_cpa_samples','number',{min:0,max:5000}],
     ['quality_cpa_model','text'],
     ['traffic_calibration_factor','number',{min:1,max:10,step:0.1}],
     ['browser_path','text','full'],
     ['cloudflare_fixed_address','text','full'],
-    ['cloudflare_fixed_jwt','text','full'],
+    ['cloudflare_fixed_jwt','password','full'],
   ];
 
   const zh = {
