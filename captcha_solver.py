@@ -209,6 +209,62 @@ def inject_turnstile_token(page, token):
     return data if isinstance(data, dict) else {"filled": 0, "called": 0}
 
 
+def is_local_endpoint(api_base):
+    """端点是否指向本机（本地 solver 通常不校验 clientKey）。"""
+    text = str(api_base or "").strip().lower()
+    if not text:
+        return False
+    for marker in ("127.0.0.1", "localhost", "0.0.0.0", "[::1]"):
+        if marker in text:
+            return True
+    return False
+
+
+def settings_from_config():
+    """从 app_config 读打码配置。未启用或缺 key 时返回 None。
+
+    任何异常都当作「未启用」—— 打码是可选增强，不能因为读配置失败
+    就把注册主流程带崩。CPA 流程与注册流程共用这一份读取逻辑。
+    """
+    try:
+        import app_config
+        cfg = getattr(app_config, "config", None)
+        if not isinstance(cfg, dict):
+            return None
+        if not cfg.get("captcha_solver_enabled"):
+            return None
+        key = str(cfg.get("captcha_solver_api_key") or "").strip()
+        base = str(cfg.get("captcha_solver_api_base") or "").strip()
+        # 本地 solver 默认不校验 clientKey（未设 API_KEY 时），所以本机端点
+        # 允许留空，免得用户为了过校验去填一个无意义的占位串。
+        if not key and not is_local_endpoint(base):
+            return None
+        return {
+            "api_key": key or "local",
+            "api_base": base,
+            "timeout_sec": float(cfg.get("captcha_solver_timeout_sec") or 120),
+        }
+    except Exception:
+        return None
+
+
+def auto_wait_sec(default=10.0):
+    """先给 Cloudflare 多少秒自动完成的机会，之后才交给打码。
+
+    自动完成只要 5 秒左右，过早打码是浪费（本地 solver 也要占浏览器）。
+    读不到配置就用默认值。
+    """
+    try:
+        import app_config
+        cfg = getattr(app_config, "config", None)
+        if isinstance(cfg, dict):
+            value = float(cfg.get("captcha_solver_auto_wait_sec") or default)
+            return max(0.0, min(value, 120.0))
+    except Exception:
+        pass
+    return float(default)
+
+
 def solve_and_inject(page, client_key, log=None, api_base="", timeout_sec=None,
                      http_post=None, url=""):
     """一站式：检测 Turnstile → 提取 sitekey → 解题 → 注入。

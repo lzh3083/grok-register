@@ -1253,8 +1253,51 @@ try {
     }
 
 
+def _try_solve_turnstile_via_solver(log_callback=None):
+    """等待超时后交给打码平台/本地 solver 解 Turnstile。
+
+    返回 True 表示 token 已注入页面（仍需重新读状态确认）。任何异常都
+    吞掉并返回 False —— 打码是可选增强，不能让它把注册主流程带崩。
+    """
+    try:
+        import captcha_solver
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[*] 打码模块不可用，继续被动等待: {str(exc)[:80]}")
+        return False
+    settings = captcha_solver.settings_from_config()
+    if not settings:
+        return False
+    if log_callback:
+        target = settings.get("api_base") or "默认端点"
+        log_callback(f"[*] 自动等待超时，改用打码过盾（{target}）")
+    try:
+        result = captcha_solver.solve_and_inject(
+            page,
+            settings["api_key"],
+            log=log_callback,
+            api_base=settings["api_base"],
+            timeout_sec=settings["timeout_sec"],
+        )
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[*] 打码异常，继续被动等待: {str(exc)[:100]}")
+        return False
+    if result.get("ok"):
+        if log_callback:
+            log_callback(
+                f"[*] 打码已解出并注入（token {int(result.get('token_len') or 0)} 字符）"
+            )
+            if not result.get("ua_matched", True):
+                log_callback("[!] 打码 UA 与浏览器不一致，token 可能不被接受")
+        return True
+    if log_callback:
+        log_callback(f"[*] 打码未成功，继续被动等待: {result.get('reason') or '未知原因'}")
+    return False
+
+
 def _wait_for_turnstile(log_callback=None, cancel_callback=None, timeout=60):
-    """等待 Turnstile 自动完成或由用户在当前浏览器窗口完成。"""
+    """等待 Turnstile 自动完成；自动失败则交给打码，最后才判超时。"""
     global page
     if page is None:
         raise Exception("页面未就绪，无法执行 Turnstile")
@@ -1264,6 +1307,14 @@ def _wait_for_turnstile(log_callback=None, cancel_callback=None, timeout=60):
     started = time.time()
     last_state = None
     last_log_at = 0.0
+
+    # 打码只尝试一次：反复调用既烧点数也拖时间，失败就退回被动等待。
+    try:
+        import captcha_solver as _cs
+        solver_after = _cs.auto_wait_sec()
+    except Exception:
+        solver_after = 10.0
+    solver_attempted = False
 
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
@@ -1296,6 +1347,14 @@ def _wait_for_turnstile(log_callback=None, cancel_callback=None, timeout=60):
                     )
             last_log_at = now
             last_state = status
+
+        # 给 Cloudflare 自动完成的机会；超过阈值仍无 token 才上打码。
+        if (not solver_attempted) and (now - started) >= solver_after:
+            solver_attempted = True
+            _try_solve_turnstile_via_solver(log_callback)
+            last_log_at = 0.0
+            last_state = None
+            continue
 
         sleep_with_cancel(min(1.0, max(deadline - now, 0.0)), cancel_callback)
 

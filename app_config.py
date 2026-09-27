@@ -108,6 +108,9 @@ DEFAULT_CONFIG = {
     "captcha_solver_api_key": "",
     "captcha_solver_api_base": "https://api.yescaptcha.com",
     "captcha_solver_timeout_sec": 120,
+    # 先给 Cloudflare 多少秒自动完成的机会，之后才交给打码。自动完成通常
+    # 只要 5 秒，过早打码纯属浪费（本地 solver 也要占浏览器资源）。
+    "captcha_solver_auto_wait_sec": 10,
     "grok2api_allow_legacy_full_save": False,
     "email_provider": "duckmail",
     "yyds_api_key": "",
@@ -242,6 +245,7 @@ def validate_config_structure(raw):
     cfg["cpa_oidc_request_timeout_sec"] = _require_int(cfg, "cpa_oidc_request_timeout_sec", 3, 120)
     cfg["cpa_oidc_poll_timeout_sec"] = _require_int(cfg, "cpa_oidc_poll_timeout_sec", 3, 120)
     cfg["captcha_solver_timeout_sec"] = _require_int(cfg, "captcha_solver_timeout_sec", 10, 600)
+    cfg["captcha_solver_auto_wait_sec"] = _require_int(cfg, "captcha_solver_auto_wait_sec", 0, 120)
     cfg["novproxy_minutes"] = _require_int(cfg, "novproxy_minutes", 1, 1440)
     cfg["novproxy_num"] = _require_int(cfg, "novproxy_num", 1, 500)
     cfg["quality_soft_threshold"] = _require_int(cfg, "quality_soft_threshold", 1, 5000)

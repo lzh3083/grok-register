@@ -282,3 +282,107 @@ class TurnstileRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TurnstileCaptchaFallbackTests(unittest.TestCase):
+    """打码回退：自动等待无果后才上打码，且失败不得影响主流程。
+
+    背景：注册流程原先只会被动等待，Cloudflare 静默挂起（不发放 token、
+    也不报错）时只能干等到超时，实测约 10% 的账号因此失败。
+    """
+
+    def _run(self, states, solver_result, *, auto_wait=0, timeout=6, extra_patches=()):
+        """跑一次 _wait_for_turnstile，返回 (异常, 打码调用次数)。"""
+        seq = list(states)
+
+        def _reader():
+            return seq.pop(0) if len(seq) > 1 else seq[0]
+
+        calls = []
+
+        def _solver(log_callback=None):
+            calls.append(1)
+            return solver_result
+
+        patches = [
+            patch.object(registration_browser, "_read_turnstile_state", side_effect=_reader),
+            patch.object(registration_browser, "raise_if_cancelled", return_value=None, create=True),
+            patch.object(registration_browser, "sleep_with_cancel", return_value=None, create=True),
+            patch.object(registration_browser, "page", object()),
+            patch.object(registration_browser, "_try_solve_turnstile_via_solver", side_effect=_solver),
+            patch("captcha_solver.auto_wait_sec", return_value=auto_wait),
+        ]
+        patches.extend(extra_patches)
+        started = [0.0]
+
+        def _clock():
+            started[0] += 1.0
+            return started[0]
+
+        patches.append(patch.object(registration_browser.time, "time", side_effect=_clock))
+        exc = None
+        for p in patches:
+            p.start()
+        try:
+            registration_browser._wait_for_turnstile(timeout=timeout)
+        except Exception as err:  # noqa: BLE001 - 测试就是要区分是否抛异常
+            exc = err
+        finally:
+            for p in reversed(patches):
+                p.stop()
+        return exc, len(calls)
+
+    def test_auto_completion_never_calls_solver(self):
+        """Cloudflare 自己 5 秒就过时，不该浪费一次打码。"""
+        exc, calls = self._run(
+            [_state(registration_browser.TURNSTILE_WAITING),
+             _state(registration_browser.TURNSTILE_SOLVED, "tok")],
+            solver_result=True, auto_wait=10, timeout=60)
+        self.assertIsNone(exc)
+        self.assertEqual(calls, 0)
+
+    def test_solver_called_after_auto_wait_elapses(self):
+        """等待超过阈值仍无 token 时必须交给打码。"""
+        exc, calls = self._run(
+            [_state(registration_browser.TURNSTILE_WAITING),
+             _state(registration_browser.TURNSTILE_SOLVED, "tok")],
+            solver_result=True, auto_wait=2, timeout=60)
+        self.assertIsNone(exc)
+        self.assertEqual(calls, 1)
+
+    def test_solver_attempted_only_once(self):
+        """反复打码既烧点数又拖时间，失败后应退回被动等待。"""
+        exc, calls = self._run(
+            [_state(registration_browser.TURNSTILE_WAITING)],
+            solver_result=False, auto_wait=1, timeout=8)
+        self.assertIsNotNone(exc)
+        self.assertIn("超时", str(exc))
+        self.assertEqual(calls, 1)
+
+    def test_solver_failure_does_not_break_flow(self):
+        """打码失败要能优雅退回等待，而不是把异常抛穿主流程。"""
+        exc, calls = self._run(
+            [_state(registration_browser.TURNSTILE_WAITING)],
+            solver_result=False, auto_wait=1, timeout=5)
+        self.assertEqual(calls, 1)
+        # 最终仍以「超时」收场（与打码无关），而不是打码异常
+        self.assertIsNotNone(exc)
+        self.assertIn("Turnstile", str(exc))
+
+    def test_solver_success_still_waits_for_token_in_page(self):
+        """注入成功不代表页面状态已更新，必须重新读状态拿到 token。"""
+        exc, calls = self._run(
+            [_state(registration_browser.TURNSTILE_WAITING),
+             _state(registration_browser.TURNSTILE_SOLVED, "injected-token")],
+            solver_result=True, auto_wait=1, timeout=60)
+        self.assertIsNone(exc)
+        self.assertEqual(calls, 1)
+
+    def test_zero_auto_wait_fires_solver_immediately(self):
+        """阈值配 0 时第一轮就该打码（给「Cloudflare 必挂」的场景用）。"""
+        exc, calls = self._run(
+            [_state(registration_browser.TURNSTILE_WAITING),
+             _state(registration_browser.TURNSTILE_SOLVED, "tok")],
+            solver_result=True, auto_wait=0, timeout=60)
+        self.assertIsNone(exc)
+        self.assertEqual(calls, 1)
