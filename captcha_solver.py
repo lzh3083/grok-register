@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import os
 import json
 import time
 
@@ -158,7 +159,18 @@ def extract_turnstile_key(page):
     probes = (
         "const el=document.querySelector('[data-sitekey]');return el?el.getAttribute('data-sitekey'):'';",
         "const el=document.querySelector('.cf-turnstile');return el?el.getAttribute('data-sitekey'):'';",
+        # 隐式渲染时 sitekey 只出现在 iframe 的 src 路径里，形如
+        # https://challenges.cloudflare.com/.../0x4AAAAAAAhr9JGVDZbrZOo0/light/normal
+        # 这是 x.ai 注册页的实际情况 —— 只查 DOM 属性会全部落空。
+        ("const f=document.querySelector('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare.com\"]');"
+         "if(!f)return '';const m=String(f.src||'').match(/(0x[0-9A-Za-z_-]{10,})/);return m?m[1]:'';"),
+        # 兜底：任何 iframe 的 src 里出现 0x 开头的 sitekey
+        ("const fs=document.querySelectorAll('iframe');"
+         "for(const f of fs){const m=String(f.src||'').match(/(0x[0-9A-Za-z_-]{10,})/);if(m)return m[1];}return '';"),
+        # Turnstile 渲染时若挂了全局回调，参数里会带 sitekey
+        ("try{if(window.turnstile&&window.turnstile._widgets)return '';}catch(e){}return '';"),
         "const m=document.documentElement.innerHTML.match(/data-sitekey=[\"']([^\"']+)[\"']/);return m?m[1]:'';",
+        ("const m=document.documentElement.innerHTML.match(/(0x4[A-Za-z0-9_-]{10,})/);return m?m[1]:'';"),
         "const m=document.documentElement.innerHTML.match(/sitekey[\"']?\\s*[:=]\\s*[\"']([0-9A-Za-z_-]{10,})[\"']/);return m?m[1]:'';",
     )
     for script in probes:
@@ -243,6 +255,8 @@ def settings_from_config():
             "api_key": key or "local",
             "api_base": base,
             "timeout_sec": float(cfg.get("captcha_solver_timeout_sec") or 120),
+            # 留空则从页面自动提取；提取不到时可用它兜底。
+            "sitekey": str(cfg.get("captcha_solver_sitekey") or "").strip(),
         }
     except Exception:
         return None
@@ -258,7 +272,10 @@ def auto_wait_sec(default=10.0):
         import app_config
         cfg = getattr(app_config, "config", None)
         if isinstance(cfg, dict):
-            value = float(cfg.get("captcha_solver_auto_wait_sec") or default)
+            # 注意不能用 `raw or default`：0 是合法值（表示立即打码），
+            # 但它是 falsy，会被静默换成默认值 —— 这个坑真踩过。
+            raw = cfg.get("captcha_solver_auto_wait_sec")
+            value = float(default if raw is None else raw)
             return max(0.0, min(value, 120.0))
     except Exception:
         pass
@@ -266,18 +283,22 @@ def auto_wait_sec(default=10.0):
 
 
 def solve_and_inject(page, client_key, log=None, api_base="", timeout_sec=None,
-                     http_post=None, url=""):
+                     http_post=None, url="", sitekey=""):
     """一站式：检测 Turnstile → 提取 sitekey → 解题 → 注入。
 
     返回 dict：{"ok": bool, "reason": str, "token_len": int, "ua_matched": bool}
     永不抛异常 —— 打码失败不应中断注册，交由调用方决定是否重试。
     """
     logger = log or (lambda _m: None)
-    try:
-        key = extract_turnstile_key(page)
-    except Exception as exc:
-        return {"ok": False, "reason": "提取 sitekey 失败: %s" % str(exc)[:100],
-                "token_len": 0, "ua_matched": False}
+    key = str(sitekey or "").strip()
+    if key:
+        logger("使用配置指定的 Turnstile sitekey: %s" % key)
+    else:
+        try:
+            key = extract_turnstile_key(page)
+        except Exception as exc:
+            return {"ok": False, "reason": "提取 sitekey 失败: %s" % str(exc)[:100],
+                    "token_len": 0, "ua_matched": False}
     if not key:
         return {"ok": False, "reason": "页面未找到 Turnstile sitekey",
                 "token_len": 0, "ua_matched": False}
@@ -315,3 +336,88 @@ def solve_and_inject(page, client_key, log=None, api_base="", timeout_sec=None,
         "token_len": len(token),
         "ua_matched": ua_matched,
     }
+
+def current_registration_proxy():
+    """取当前线程正在使用的注册代理 URL，取不到返回空串。"""
+    try:
+        import proxy_pool_v3
+        url = proxy_pool_v3.current_proxy_url()
+        if url:
+            return str(url).strip()
+    except Exception:
+        pass
+    try:
+        import browser_runtime
+        return str(browser_runtime.get_configured_proxy() or "").strip()
+    except Exception:
+        return ""
+
+
+def solver_proxy_line(proxy_url):
+    """把注册侧的代理 URL 转成 solver 的 proxies.txt 行格式。
+
+    Playwright/Camoufox 认 socks5://，不认 socks5h://（h 只是 curl 的
+    本地 DNS 解析标记），这里统一降级。
+    """
+    url = str(proxy_url or "").strip()
+    if not url:
+        return ""
+    if url.startswith("socks5h://"):
+        return "socks5://" + url[len("socks5h://"):]
+    return url
+
+
+def sync_solver_proxy(log=None, path=""):
+    """把当前注册代理写进 solver 的 proxies.txt。
+
+    Cloudflare 会核对 Turnstile token 与提交请求是否来自同一出口 IP：
+    实测 solver 走 NAS 本机 IP、注册走住宅代理时，token 能注入、页面也
+    显示验证完成，但服务端拒绝，最终页卡在反复重试且拿不到 sso cookie；
+    让 solver 走同一个住宅代理后立刻成功。所以每次打码前必须同步代理。
+
+    注意：solver 用的是 random.choice(proxies)，因此这里清空后只写一行，
+    保证它别无选择。多线程并发时该文件会互相覆盖，故仅在单线程注册下
+    可靠。
+    """
+    logger = log or (lambda _m: None)
+    target = str(path or "").strip() or default_proxies_file()
+    proxy = current_registration_proxy()
+    if not proxy:
+        # 直连场景：清空文件，避免 solver 继续用上一批的旧代理。
+        try:
+            if target and os.path.exists(target):
+                with open(target, "w", encoding="utf-8") as handle:
+                    handle.write("")
+        except Exception:
+            pass
+        return ""
+
+    line = solver_proxy_line(proxy)
+    if not target:
+        return line
+    try:
+        directory = os.path.dirname(target)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        os.replace(tmp, target)
+        logger("已同步打码代理: %s" % line)
+    except Exception as exc:
+        logger("同步打码代理失败（不影响注册）: %s" % str(exc)[:80])
+    return line
+
+
+def default_proxies_file():
+    """solver 的 proxies.txt 默认位置。"""
+    try:
+        import app_config
+        cfg = app_config.config if isinstance(app_config.config, dict) else {}
+        configured = str(cfg.get("captcha_solver_proxies_file") or "").strip()
+        if configured:
+            return configured
+    except Exception:
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, "turnstile-solver", "proxies.txt")

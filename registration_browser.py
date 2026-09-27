@@ -1271,6 +1271,13 @@ def _try_solve_turnstile_via_solver(log_callback=None):
     if log_callback:
         target = settings.get("api_base") or "默认端点"
         log_callback(f"[*] 自动等待超时，改用打码过盾（{target}）")
+    # Cloudflare 会核对 token 与提交请求的出口 IP：solver 走本机 IP 而注册
+    # 走住宅代理时，token 能注入但服务端拒绝，最终卡在拿不到 sso cookie。
+    # 所以打码前把当前租约代理同步给 solver。
+    try:
+        captcha_solver.sync_solver_proxy(log=log_callback)
+    except Exception:
+        pass
     try:
         result = captcha_solver.solve_and_inject(
             page,
@@ -1278,6 +1285,7 @@ def _try_solve_turnstile_via_solver(log_callback=None):
             log=log_callback,
             api_base=settings["api_base"],
             timeout_sec=settings["timeout_sec"],
+            sitekey=settings.get("sitekey") or "",
         )
     except Exception as exc:
         if log_callback:

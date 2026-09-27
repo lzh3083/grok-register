@@ -111,6 +111,11 @@ DEFAULT_CONFIG = {
     # 先给 Cloudflare 多少秒自动完成的机会，之后才交给打码。自动完成通常
     # 只要 5 秒，过早打码纯属浪费（本地 solver 也要占浏览器资源）。
     "captcha_solver_auto_wait_sec": 10,
+    # 留空则从页面自动提取 sitekey（含 iframe src）。某些隐式渲染的页面
+    # 提取不到，可在这里写死，例如 x.ai: 0x4AAAAAAAhr9JGVDZbrZOo0
+    "captcha_solver_sitekey": "",
+    # solver 的 proxies.txt 路径；留空则用 turnstile-solver/proxies.txt
+    "captcha_solver_proxies_file": "",
     "grok2api_allow_legacy_full_save": False,
     "email_provider": "duckmail",
     "yyds_api_key": "",

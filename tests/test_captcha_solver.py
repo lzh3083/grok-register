@@ -4,7 +4,10 @@
 绑定这个细节极易踩坑，所以这里把各种响应形态都钉住。
 """
 import json
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -274,3 +277,85 @@ class SolveAndInjectTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoWaitSecTests(unittest.TestCase):
+    """auto_wait_sec 必须把 0 当作合法值。
+
+    踩过的坑：写成 `float(cfg.get(...) or default)` 时，配置 0（表示立即
+    打码）会被当成 falsy 静默换成默认值 10，导致「强制打码」配置不生效
+    却毫无报错。
+    """
+
+    def _with_config(self, value):
+        import app_config
+        original = app_config.config
+        app_config.config = {} if value is None else {
+            "captcha_solver_auto_wait_sec": value}
+        try:
+            return captcha_solver.auto_wait_sec()
+        finally:
+            app_config.config = original
+
+    def test_zero_is_respected(self):
+        self.assertEqual(self._with_config(0), 0.0)
+
+    def test_explicit_value_is_respected(self):
+        self.assertEqual(self._with_config(30), 30.0)
+
+    def test_missing_key_falls_back_to_default(self):
+        self.assertEqual(self._with_config(None), 10.0)
+
+    def test_value_is_clamped(self):
+        self.assertEqual(self._with_config(9999), 120.0)
+        self.assertEqual(self._with_config(-5), 0.0)
+
+
+class SolverProxySyncTests(unittest.TestCase):
+    """打码前必须把当前注册代理同步给 solver。
+
+    踩过的坑：solver 走 NAS 本机 IP、注册走住宅代理时，Turnstile token
+    能注入、页面也显示「验证完成」，但服务端因出口 IP 不一致而拒绝，
+    注册卡在最终页反复点提交、始终拿不到 sso cookie。让 solver 走同一
+    个住宅代理后立刻成功。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "proxies.txt")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _sync(self, proxy):
+        import unittest.mock as mock
+        with mock.patch.object(captcha_solver, "current_registration_proxy",
+                               return_value=proxy):
+            return captcha_solver.sync_solver_proxy(path=self.path)
+
+    def test_writes_current_proxy(self):
+        line = self._sync("socks5h://1.2.3.4:5678")
+        self.assertEqual(line, "socks5://1.2.3.4:5678")
+        with open(self.path) as handle:
+            self.assertEqual(handle.read().strip(), "socks5://1.2.3.4:5678")
+
+    def test_only_one_line_so_random_choice_is_forced(self):
+        self._sync("socks5h://1.1.1.1:1111")
+        self._sync("socks5h://2.2.2.2:2222")
+        with open(self.path) as handle:
+            lines = [l for l in handle.read().splitlines() if l.strip()]
+        self.assertEqual(lines, ["socks5://2.2.2.2:2222"])
+
+    def test_direct_connection_clears_stale_proxy(self):
+        self._sync("socks5h://1.1.1.1:1111")
+        self.assertEqual(self._sync(""), "")
+        with open(self.path) as handle:
+            self.assertEqual(handle.read().strip(), "")
+
+    def test_http_proxy_is_preserved(self):
+        self.assertEqual(self._sync("http://9.9.9.9:8080"),
+                         "http://9.9.9.9:8080")
+
+    def test_missing_file_is_not_created_for_direct(self):
+        self._sync("")
+        self.assertFalse(os.path.exists(self.path))
